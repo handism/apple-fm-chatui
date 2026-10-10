@@ -19,9 +19,6 @@
     "ui"
   ],
   "main": "./dist/extension.js",
-  "activationEvents": [
-    "onView:localFM.chat"
-  ],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": true
@@ -72,7 +69,8 @@
         {
           "type": "webview",
           "id": "localFM.chat",
-          "name": "Local FM Chat"
+          "name": "Local FM Chat",
+          "icon": "media/icon.svg"
         }
       ]
     },
