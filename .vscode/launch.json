@@ -1,0 +1,1 @@
+{"version":"0.2.0","configurations":[{"name":"Local FM 拡張を起動","type":"extensionHost","request":"launch","args":["--extensionDevelopmentPath=${workspaceFolder}"],"outFiles":["${workspaceFolder}/dist/**/*.js"],"preLaunchTask":"build"}]}

@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Apple Silicon の Mac 専用拡張のため、テストもビルドも macOS 26（arm64）で実行する
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+
+  build:
+    runs-on: macos-26
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      # ランナーの Command Line Tools は SDK が古い場合があるため、Foundation Models を含む Xcode を使う
+      - run: echo "DEVELOPER_DIR=$(xcode-select -p)" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: npm run build:native
+      - run: npx vsce package --target darwin-arm64 --out apple-fm-chatui-darwin-arm64-${{ steps.version.outputs.version }}.vsix
+      - uses: actions/upload-artifact@v7
+        with:
+          name: apple-fm-chatui-vsix
+          path: apple-fm-chatui-darwin-arm64-${{ steps.version.outputs.version }}.vsix
+
+  # package.json のバージョンに対応する GitHub Release がまだ無ければ作成する（タグは自動で付く）
+  release:
+    needs: [test, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # gh CLI だけで済むため軽量ランナーで実行
+    runs-on: ubuntu-slim
+    permissions:
+      contents: write
+    concurrency: release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - id: check
+        run: |
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            echo "v$VERSION はリリース済みのためスキップします。"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.check.outputs.exists == 'false'
+        uses: actions/download-artifact@v8
+        with:
+          name: apple-fm-chatui-vsix
+      - if: steps.check.outputs.exists == 'false'
+        run: |
+          gh release create "v$VERSION" "apple-fm-chatui-darwin-arm64-$VERSION.vsix" \
+            --target "$GITHUB_SHA" \
+            --title "Local FM Chat v$VERSION" \
+            --generate-notes

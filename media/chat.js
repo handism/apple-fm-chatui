@@ -1,0 +1,97 @@
+(() => {
+  const vscode = acquireVsCodeApi();
+  const $ = id => document.getElementById(id);
+  const prompt = $('prompt');
+  let state = { busy: false, ready: false };
+  prompt.value = vscode.getState()?.draft || '';
+  const send = type => vscode.postMessage({ type });
+  // Grow with content up to the CSS max-height instead of showing a resize handle.
+  function fit() { prompt.style.height = 'auto'; prompt.style.height = `${prompt.scrollHeight}px`; }
+  function showDiagnostics(open) { $('diagnostics').hidden = !open; $('status-toggle').setAttribute('aria-expanded', String(open)); }
+  function controls() {
+    $('send').disabled = state.busy || !state.ready || !prompt.value.trim();
+    $('stop').hidden = !state.busy;
+    $('send').hidden = state.busy;
+    $('refresh').disabled = state.busy;
+  }
+  // Model output is always text, never trusted HTML. Fenced code gets a pre block.
+  function content(parent, text) {
+    const parts = text.split(/```[^\n]*\n([\s\S]*?)(?:```|$)/g);
+    parts.forEach((part, index) => {
+      if (!part) return;
+      const node = document.createElement(index % 2 ? 'pre' : 'div');
+      node.className = 'body-text'; node.textContent = part; parent.append(node);
+    });
+  }
+  window.addEventListener('message', ({ data }) => {
+    if (data.type === 'accepted') { prompt.value = ''; vscode.setState({ draft: '' }); fit(); controls(); return; }
+    if (data.type === 'diagnosticsCopied') { $('copy-status').textContent = 'コピーしました'; return; }
+    if (data.type !== 'state') return;
+    state = data;
+    const scroller = $('conversation');
+    const stick = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
+    $('status').textContent = data.status;
+    $('dot').className = data.diagnostics?.code ? 'problem' : (data.ready ? 'online' : '');
+    const diagnostic = data.diagnostics || {};
+    const time = value => value ? new Date(value).toLocaleString() : '未実施';
+    $('availability').textContent = `利用可否: ${diagnostic.availability === 'available' ? '利用可能' : diagnostic.availability === 'unavailableOrFailed' ? '利用不可または確認失敗' : '未確認'}（確認: ${time(diagnostic.lastCheckedAt)}）`;
+    $('response-check').textContent = diagnostic.lastResponseAt ? `最後に応答が完了した日時: ${time(diagnostic.lastResponseAt)}` : '応答実績: この起動中はまだ未確認です。メッセージを送信して確認できます。';
+    $('recovery').hidden = !diagnostic.guidance;
+    $('recovery').textContent = diagnostic.guidance || '';
+    $('error-code').hidden = !diagnostic.code;
+    $('error-code').textContent = diagnostic.code ? `診断分類: ${diagnostic.code}` : '';
+    if (diagnostic.code) showDiagnostics(true);
+    $('copy-status').textContent = '';
+    $('welcome').hidden = data.messages.length > 0;
+    $('messages').replaceChildren();
+    data.messages.forEach((message, index) => {
+      const article = document.createElement('article'); article.className = message.role;
+      const heading = document.createElement('div'); heading.className = 'message-heading';
+      const label = document.createElement('strong'); label.textContent = message.role === 'user' ? 'あなた' : 'LOCAL FM';
+      heading.append(label);
+      if (message.text) {
+        const copy = document.createElement('button'); copy.className = 'quiet'; copy.textContent = 'コピー';
+        copy.setAttribute('aria-label', `${index + 1}番目のメッセージをコピー`);
+        copy.onclick = () => vscode.postMessage({ type: 'copy', index }); heading.append(copy);
+      }
+      article.append(heading); content(article, message.text || (data.busy ? '考えています…' : '応答はありません。'));
+      if (message.edit) {
+        const edit = message.edit;
+        const actions = document.createElement('div'); actions.className = 'edit-actions';
+        const notes = { generating: '選択テキストを処理中…', generated: '差分を確認してから適用できます。', previewed: '差分を開きました。内容を確認して適用してください。', applying: '適用中…', applied: '適用しました。元に戻すにはエディタでUndo。', stale: '元の文章が変更されたか閉じられました。選択し直して実行してください。', failed: '生成が完了しなかったため適用できません。', discarded: 'この候補は破棄しました。' };
+        const note = document.createElement('small'); note.textContent = `${edit.label} · ${notes[edit.state] || ''}`; actions.append(note);
+        const button = (label, type) => {
+          const node = document.createElement('button'); node.type = 'button'; node.textContent = label;
+          node.onclick = () => vscode.postMessage({ type, id: edit.id }); actions.append(node);
+        };
+        if (['generated', 'previewed'].includes(edit.state)) button('差分を見る', 'previewEdit');
+        if (edit.state === 'previewed') button('選択範囲に適用', 'applyEdit');
+        if (['generated', 'previewed', 'stale', 'failed'].includes(edit.state)) button('破棄', 'discardEdit');
+        article.append(actions);
+      }
+      if (message.incomplete && !data.busy) { const note = document.createElement('small'); note.textContent = '未完了 · 次の会話には含まれません'; article.append(note); }
+      $('messages').append(article);
+    });
+    $('attachment').hidden = !data.attachment;
+    $('attachment').querySelector('span').textContent = `選択テキスト · ${data.attachment.length.toLocaleString()}文字`;
+    $('attachment').title = data.attachment;
+    controls();
+    if (stick) scroller.scrollTop = scroller.scrollHeight;
+  });
+  $('composer').onsubmit = event => {
+    event.preventDefault();
+    if (!state.busy && state.ready && prompt.value.trim()) vscode.postMessage({ type: 'send', text: prompt.value });
+  };
+  prompt.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+      event.preventDefault(); $('composer').requestSubmit();
+    }
+  });
+  prompt.addEventListener('input', () => { vscode.setState({ draft: prompt.value }); fit(); controls(); });
+  $('status-toggle').onclick = () => showDiagnostics($('diagnostics').hidden);
+  for (const [id, type] of [['reset', 'reset'], ['refresh', 'refresh'], ['stop', 'stop'], ['attach', 'attach'], ['remove', 'removeAttachment'], ['copy-diagnostics', 'copyDiagnostics']]) $(id).onclick = () => send(type);
+  document.querySelectorAll('[data-prompt]').forEach(button => button.onclick = () => {
+    prompt.value = button.dataset.prompt; prompt.dispatchEvent(new Event('input')); prompt.focus();
+  });
+  fit(); controls(); send('ready');
+})();

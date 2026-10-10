@@ -1,0 +1,125 @@
+{
+  "name": "apple-fm-chatui",
+  "displayName": "Local FM Chat",
+  "description": "MacのApple Foundation Modelsと、VS Codeのサイドバーでローカルチャット。",
+  "version": "0.2.0",
+  "publisher": "local-fm",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/handism/apple-fm-chatui.git"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Machine Learning"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onView:localFM.chat"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "localFM.open",
+        "title": "Local FM: チャットを開く"
+      },
+      {
+        "command": "localFM.attachSelection",
+        "title": "Local FM: 選択テキストをチャットに添付"
+      },
+      {
+        "command": "localFM.selection.summarize",
+        "title": "Local FM: 選択テキストを要約",
+        "enablement": "editorHasSelection && resourceScheme != local-fm-preview"
+      },
+      {
+        "command": "localFM.selection.rewrite",
+        "title": "Local FM: 選択テキストを読みやすくする",
+        "enablement": "editorHasSelection && resourceScheme != local-fm-preview"
+      },
+      {
+        "command": "localFM.selection.translate",
+        "title": "Local FM: 選択テキストを英訳",
+        "enablement": "editorHasSelection && resourceScheme != local-fm-preview"
+      },
+      {
+        "command": "localFM.selection.bullets",
+        "title": "Local FM: 選択テキストを箇条書きにする",
+        "enablement": "editorHasSelection && resourceScheme != local-fm-preview"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "localFM",
+          "title": "Local FM",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "localFM": [
+        {
+          "type": "webview",
+          "id": "localFM.chat",
+          "name": "Local FM Chat"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "localFM.attachSelection",
+          "when": "editorHasSelection",
+          "group": "9_cutcopypaste"
+        },
+        {
+          "command": "localFM.selection.summarize",
+          "when": "editorHasSelection && resourceScheme != local-fm-preview",
+          "group": "localFM@1"
+        },
+        {
+          "command": "localFM.selection.rewrite",
+          "when": "editorHasSelection && resourceScheme != local-fm-preview",
+          "group": "localFM@2"
+        },
+        {
+          "command": "localFM.selection.translate",
+          "when": "editorHasSelection && resourceScheme != local-fm-preview",
+          "group": "localFM@3"
+        },
+        {
+          "command": "localFM.selection.bullets",
+          "when": "editorHasSelection && resourceScheme != local-fm-preview",
+          "group": "localFM@4"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "build:native": "node scripts/build-native.mjs",
+    "check": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.cjs",
+    "package": "npm run build:native && npm run build && vsce package --target darwin-arm64",
+    "vscode:prepublish": "npm run build",
+    "test:host": "npm run build && node scripts/test-host.cjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "@types/vscode": "1.85.0",
+    "@vscode/vsce": "3.9.2",
+    "typescript": "5.9.3",
+    "@vscode/test-electron": "2.5.2"
+  }
+}

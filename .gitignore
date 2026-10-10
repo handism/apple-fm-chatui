@@ -1,0 +1,16 @@
+node_modules/
+.build/
+dist/
+bin/
+*.vsix
+.test-results/
+.vscode-test/
+
+# Local settings, credentials and logs
+.env
+.env.*
+!.env.example
+.npmrc
+*.log
+.DS_Store
+Thumbs.db
