@@ -3,16 +3,18 @@ const assert = require('node:assert/strict');
 const Module = require('node:module');
 const path = require('node:path');
 
-test('view sends completed history, rejects double send, and ignores stale completion after reset', async () => {
+const { DiagnosticError } = require('../dist/diagnostics');
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+function setup() {
   let provider, listener;
-  const states = [], jobs = [];
+  const states = [], jobs = [], spares = [];
   const commands = new Map();
-  let copied;
-  const { DiagnosticError } = require("../dist/diagnostics");
+  const clipboard = {};
   const vscode = {
     workspace: { registerTextDocumentContentProvider: () => ({ dispose() {} }), onDidChangeTextDocument: () => ({ dispose() {} }), onDidCloseTextDocument: () => ({ dispose() {} }) },
     Range: class { constructor(start, end) { this.start = start; this.end = end; } }, EndOfLine: { CRLF: 2, LF: 1 },
-    version: "1.105.0", env: { clipboard: { writeText: async text => { copied = text; } } },
+    version: "1.105.0", env: { clipboard: { writeText: async text => { clipboard.text = text; } } },
     Uri: { joinPath: (base, ...parts) => ({ fsPath: path.join(base.fsPath, ...parts), toString: () => parts.join('/') }) },
     window: { registerWebviewViewProvider: (_, p) => { provider = p; return { dispose() {} }; } },
     commands: { registerCommand: (name, fn) => { commands.set(name, fn); return { dispose() {} }; }, executeCommand: async name => { if (name === 'localFM.chat.focus') listener({ type: 'ready' }); } }
@@ -21,13 +23,17 @@ test('view sends completed history, rejects double send, and ignores stale compl
   Module._load = function (id, ...args) {
     if (id === 'vscode') return vscode;
     if (id === './bridge') {
-      const job = (request, onEvent) => {
+      const job = (request, onEvent, spare) => {
         let resolve, reject;
         const done = new Promise((yes, no) => { resolve = yes; reject = no; });
-        const job = { request, onEvent, resolve, reject, done, cancel() { /* Simulate a late completion. */ } };
+        const job = { request, onEvent, resolve, reject, done, spare, cancel() { /* Simulate a late completion. */ } };
         jobs.push(job); return job;
       };
-      return { checkStatus: () => job(undefined, () => {}), generate: (binary, request, onEvent) => job(request, onEvent) };
+      return {
+        checkStatus: () => job(undefined, () => {}),
+        generate: (binary, request, onEvent, timeoutMs, spare) => { if (spare) spare.taken = true; return job(request, onEvent, spare); },
+        prepare: () => { const spare = { taken: false, disposed: false, dispose() { if (!this.taken) this.disposed = true; } }; spares.push(spare); return spare; }
+      };
     }
     return original.call(this, id, ...args);
   };
@@ -41,54 +47,59 @@ test('view sends completed history, rejects double send, and ignores stale compl
     onDidReceiveMessage: fn => { listener = fn; return { dispose() {} }; }
   };
   provider.resolveWebviewView({ webview, onDidDispose: () => ({ dispose() {} }) });
+  const last = () => states.filter(s => s.type === 'state').at(-1);
+  return { provider, webview, states, jobs, spares, commands, vscode, clipboard, last, send: message => listener(message) };
+}
+
+test('view sends completed history, rejects double send, and ignores stale completion after reset', async () => {
+  const { provider, webview, states, jobs, commands, vscode, clipboard, last, send: listener } = setup();
   assert.doesNotMatch(webview.html, /\{\{/);
   assert.match(webview.html, /maxlength="12000"/);
   assert.match(webview.html, /script-src 'nonce-([^']+)'[\s\S]*<script nonce="\1" src="media\/chat\.js">/);
-  const tick = () => new Promise(resolve => setImmediate(resolve));
   listener({ type: 'ready' }); jobs[0].resolve(); await tick();
-  assert.match(states.at(-1).status, /応答はまだ未確認/);
-  assert.equal(states.at(-1).diagnostics.lastResponseAt, undefined);
+  assert.match(last().status, /応答はまだ未確認/);
+  assert.equal(last().diagnostics.lastResponseAt, undefined);
   listener({ type: 'send', text: 'hello' });
   listener({ type: 'send', text: 'duplicate' });
   assert.equal(jobs.length, 2);
   jobs[1].onEvent({ type: 'snapshot', text: 'world' });
-  assert.equal(states.at(-1).diagnostics.lastResponseAt, undefined);
+  assert.equal(last().diagnostics.lastResponseAt, undefined);
   jobs[1].resolve(); await tick();
-  assert.match(states.at(-1).status, /応答確認済み/);
-  const lastSuccess = states.at(-1).diagnostics.lastResponseAt;
+  assert.match(last().status, /応答確認済み/);
+  const lastSuccess = last().diagnostics.lastResponseAt;
   listener({ type: 'send', text: 'follow-up' });
   assert.deepEqual(jobs[2].request.history, [{ role: 'user', text: 'hello' }, { role: 'assistant', text: 'world' }]);
   listener({ type: 'reset' });
   jobs[2].onEvent({ type: 'snapshot', text: 'stale' }); jobs[2].resolve(); await tick();
-  assert.deepEqual(states.at(-1).messages, []);
+  assert.deepEqual(last().messages, []);
   listener({ type: 'send', text: 'fresh' });
   assert.deepEqual(jobs[3].request.history, []);
   jobs[3].reject(new Error('failure')); await tick();
-  assert.equal(states.at(-1).busy, false);
-  assert.equal(states.at(-1).diagnostics.code, 'generationFailed');
-  assert.equal(states.at(-1).diagnostics.lastResponseAt, lastSuccess);
+  assert.equal(last().busy, false);
+  assert.equal(last().diagnostics.code, 'generationFailed');
+  assert.equal(last().diagnostics.lastResponseAt, lastSuccess);
   listener({ type: 'send', text: 'retry' });
   assert.deepEqual(jobs[4].request.history, []);
   jobs[4].reject(new DiagnosticError('会話の上限', 'contextLimit', 'ModelManagerServices.ModelManagerError', 1008)); await tick();
-  assert.match(states.at(-1).diagnostics.guidance, /新しい会話/);
+  assert.match(last().diagnostics.guidance, /新しい会話/);
   listener({ type: 'copyDiagnostics' }); await tick();
-  const report = JSON.parse(copied);
+  const report = JSON.parse(clipboard.text);
   assert.equal(report.lastFailure.category, 'contextLimit');
   assert.equal(report.lastFailure.nativeCode, 1008);
   assert.equal(report.lastSuccessfulResponseAt, lastSuccess);
-  for (const secret of ['hello', 'world', 'follow-up', 'fresh', process.cwd()]) assert.ok(!copied.includes(secret));
+  for (const secret of ['hello', 'world', 'follow-up', 'fresh', process.cwd()]) assert.ok(!clipboard.text.includes(secret));
   listener({ type: 'reset' });
-  assert.equal(states.at(-1).diagnostics.code, undefined);
-  assert.equal(states.at(-1).diagnostics.lastResponseAt, lastSuccess);
+  assert.equal(last().diagnostics.code, undefined);
+  assert.equal(last().diagnostics.lastResponseAt, lastSuccess);
   listener({ type: 'send', text: 'empty response' }); jobs[5].resolve(); await tick();
-  assert.equal(states.at(-1).diagnostics.code, 'generationFailed');
+  assert.equal(last().diagnostics.code, 'generationFailed');
   listener({ type: 'send', text: 'not ready' });
   jobs[6].reject(new DiagnosticError('モデル準備中', 'modelNotReady')); await tick();
-  assert.equal(states.at(-1).ready, false);
-  assert.match(states.at(-1).diagnostics.guidance, /ダウンロード/);
+  assert.equal(last().ready, false);
+  assert.match(last().diagnostics.guidance, /ダウンロード/);
   listener({ type: 'refresh' }); jobs[7].resolve(); await tick();
-  assert.equal(states.at(-1).ready, true);
-  assert.equal(states.at(-1).diagnostics.code, undefined);
+  assert.equal(last().ready, true);
+  assert.equal(last().diagnostics.code, undefined);
   listener({ type: 'send', text: 'chat before edit' });
   jobs[8].onEvent({ type: 'snapshot', text: 'chat answer' }); jobs[8].resolve(); await tick();
   const source = { uri: { scheme: 'file' }, version: 1, isClosed: false, eol: 1,
@@ -101,9 +112,9 @@ test('view sends completed history, rejects double send, and ignores stale compl
   assert.match(jobs[9].request.prompt, /selected text/);
   assert.ok(!jobs[9].request.prompt.includes('before selected text after'));
   jobs[9].onEvent({ type: 'snapshot', text: 'summary' }); jobs[9].resolve(); await action;
-  const editAnswer = states.at(-1).messages.at(-1);
+  const editAnswer = last().messages.at(-1);
   assert.equal(editAnswer.edit.state, 'generated');
-  assert.equal(states.at(-1).attachment, 'selected text');
+  assert.equal(last().attachment, 'selected text');
   assert.equal(states.filter(s => s.type === 'accepted').length, acceptedBefore);
   listener({ type: 'send', text: 'chat after edit' });
   assert.deepEqual(jobs[10].request.history, [{ role: 'user', text: 'chat before edit' }, { role: 'assistant', text: 'chat answer' }]);
@@ -111,7 +122,85 @@ test('view sends completed history, rejects double send, and ignores stale compl
   const cancelledAction = commands.get('localFM.selection.rewrite')(); await tick();
   listener({ type: 'stop' });
   jobs[11].onEvent({ type: 'snapshot', text: 'stale edit' }); jobs[11].resolve(); await cancelledAction;
-  assert.equal(states.at(-1).messages.at(-1).edit.state, 'failed');
-  assert.equal(states.at(-1).messages.at(-1).text, '');
+  assert.equal(last().messages.at(-1).edit.state, 'failed');
+  assert.equal(last().messages.at(-1).text, '');
   provider.dispose();
+});
+
+async function exchange(s, text) {
+  s.send({ type: 'send', text });
+  const job = s.jobs.at(-1);
+  job.onEvent({ type: 'snapshot', text: `${text}!` }); job.resolve(); await tick();
+  return job;
+}
+
+test('streaming posts only the latest text of the growing message, batched', async () => {
+  const s = setup();
+  s.send({ type: 'ready' }); s.jobs[0].resolve(); await tick();
+  s.send({ type: 'send', text: 'hello' });
+  const before = s.states.length;
+  for (const text of ['a', 'ab', 'abc']) s.jobs[1].onEvent({ type: 'snapshot', text });
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.deepEqual(s.states.slice(before), [{ type: 'snapshot', index: 1, text: 'abc' }]);
+  // A pending snapshot is superseded by the full state on completion.
+  s.jobs[1].onEvent({ type: 'snapshot', text: 'abcd' }); s.jobs[1].resolve(); await tick();
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(s.states.at(-1).type, 'state');
+  assert.equal(s.last().messages[1].text, 'abcd');
+  s.provider.dispose();
+});
+
+test('a spare helper is prepared after each request and dropped when it cannot be used', async () => {
+  const s = setup();
+  s.send({ type: 'ready' }); assert.equal(s.spares.length, 0);
+  s.jobs[0].resolve(); await tick();
+  assert.equal(s.spares.length, 1);
+  await exchange(s, 'hello');
+  assert.equal(s.jobs[1].spare, s.spares[0]);
+  assert.equal(s.spares.length, 2);
+  s.send({ type: 'refresh' });
+  assert.equal(s.spares[1].disposed, true);
+  s.jobs.at(-1).resolve(); await tick();
+  assert.equal(s.spares.length, 3);
+  s.send({ type: 'send', text: 'unavailable' });
+  s.jobs.at(-1).reject(new DiagnosticError('モデル準備中', 'modelNotReady')); await tick();
+  assert.equal(s.spares.length, 3);
+  s.provider.dispose();
+  assert.equal(s.spares.every(spare => spare.taken || spare.disposed), true);
+});
+
+test('context limit drops the older half of the exchanges and retries', async () => {
+  const s = setup();
+  s.send({ type: 'ready' }); s.jobs[0].resolve(); await tick();
+  for (const text of ['one', 'two', 'three']) await exchange(s, text);
+  s.send({ type: 'send', text: 'four' });
+  assert.equal(s.jobs.at(-1).request.history.length, 6);
+  s.jobs.at(-1).onEvent({ type: 'snapshot', text: 'partial' });
+  s.jobs.at(-1).reject(new DiagnosticError('上限', 'contextLimit')); await tick();
+  assert.deepEqual(s.jobs.at(-1).request.history.map(turn => turn.text), ['three', 'three!']);
+  assert.equal(s.last().messages.at(-1).text, '');
+  s.jobs.at(-1).onEvent({ type: 'snapshot', text: 'four!' }); s.jobs.at(-1).resolve(); await tick();
+  assert.match(s.last().messages.at(-1).note, /2件/);
+  assert.equal(s.last().diagnostics.code, undefined);
+  s.send({ type: 'send', text: 'five' });
+  assert.deepEqual(s.jobs.at(-1).request.history.map(turn => turn.text), ['three', 'three!', 'four', 'four!']);
+  // With no history left to drop, the failure reaches the user.
+  s.jobs.at(-1).reject(new DiagnosticError('上限', 'contextLimit')); await tick();
+  s.jobs.at(-1).reject(new DiagnosticError('上限', 'contextLimit')); await tick();
+  assert.deepEqual(s.jobs.at(-1).request.history, []);
+  s.jobs.at(-1).reject(new DiagnosticError('上限', 'contextLimit')); await tick();
+  assert.equal(s.last().diagnostics.code, 'contextLimit');
+  assert.equal(s.last().busy, false);
+  s.provider.dispose();
+});
+
+test('long conversations keep the newest exchanges within the turn limit', async () => {
+  const s = setup();
+  s.send({ type: 'ready' }); s.jobs[0].resolve(); await tick();
+  for (let i = 0; i < 50; i++) await exchange(s, `m${i}`);
+  s.send({ type: 'send', text: 'next' });
+  const history = s.jobs.at(-1).request.history;
+  assert.equal(history.length, 98);
+  assert.equal(history[0].text, 'm1');
+  s.provider.dispose();
 });

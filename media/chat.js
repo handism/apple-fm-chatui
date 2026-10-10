@@ -2,7 +2,7 @@
   const vscode = acquireVsCodeApi();
   const $ = id => document.getElementById(id);
   const prompt = $('prompt');
-  let state = { busy: false, ready: false };
+  let state = { busy: false, ready: false, messages: [] };
   prompt.value = vscode.getState()?.draft || '';
   const send = type => vscode.postMessage({ type });
   // Grow with content up to the CSS max-height instead of showing a resize handle.
@@ -70,13 +70,62 @@
     }
     parent.append(text.slice(last));
   }
+  const notes = { generating: '選択テキストを処理中…', generated: '差分を確認してから適用できます。', previewed: '差分を開きました。内容を確認して適用してください。', applying: '適用中…', applied: '適用しました。元に戻すにはエディタでUndo。', stale: '元の文章が変更されたか閉じられました。選択し直して実行してください。', failed: '生成が完了しなかったため適用できません。', discarded: 'この候補は破棄しました。' };
+  function article(message, index) {
+    const node = document.createElement('article'); node.className = message.role;
+    const heading = document.createElement('div'); heading.className = 'message-heading';
+    const label = document.createElement('strong'); label.textContent = message.role === 'user' ? 'あなた' : 'LOCAL FM';
+    heading.append(label);
+    if (message.text) {
+      const copy = document.createElement('button'); copy.className = 'quiet'; copy.textContent = 'コピー';
+      copy.setAttribute('aria-label', `${index + 1}番目のメッセージをコピー`);
+      copy.onclick = () => vscode.postMessage({ type: 'copy', index }); heading.append(copy);
+    }
+    node.append(heading); content(node, message.text || (state.busy ? '考えています…' : '応答はありません。'), message.role === 'assistant' && !!message.text);
+    if (message.edit) {
+      const edit = message.edit;
+      const actions = document.createElement('div'); actions.className = 'edit-actions';
+      const note = document.createElement('small'); note.textContent = `${edit.label} · ${notes[edit.state] || ''}`; actions.append(note);
+      const button = (label, type) => {
+        const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
+        button.onclick = () => vscode.postMessage({ type, id: edit.id }); actions.append(button);
+      };
+      if (['generated', 'previewed'].includes(edit.state)) button('差分を見る', 'previewEdit');
+      if (edit.state === 'previewed') button('選択範囲に適用', 'applyEdit');
+      if (['generated', 'previewed', 'stale', 'failed'].includes(edit.state)) button('破棄', 'discardEdit');
+      node.append(actions);
+    }
+    if (message.note) { const note = document.createElement('small'); note.textContent = message.note; node.append(note); }
+    if (message.incomplete && !state.busy) { const note = document.createElement('small'); note.textContent = '未完了 · 次の会話には含まれません'; node.append(note); }
+    return node;
+  }
+  // Unchanged messages keep their DOM nodes, so text selection and focus in earlier
+  // messages survive streaming; only messages whose rendered inputs changed are rebuilt.
+  let rendered = [];
+  function renderMessages() {
+    const scroller = $('conversation');
+    const stick = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
+    $('welcome').hidden = state.messages.length > 0;
+    state.messages.forEach((message, index) => {
+      const key = JSON.stringify([message, !message.text && state.busy, message.incomplete && state.busy]);
+      if (rendered[index]?.key === key) return;
+      const node = article(message, index);
+      if (rendered[index]) rendered[index].node.replaceWith(node); else $('messages').append(node);
+      rendered[index] = { key, node };
+    });
+    for (const extra of rendered.splice(state.messages.length)) extra.node.remove();
+    if (stick) scroller.scrollTop = scroller.scrollHeight;
+  }
   window.addEventListener('message', ({ data }) => {
     if (data.type === 'accepted') { prompt.value = ''; vscode.setState({ draft: '' }); fit(); controls(); return; }
     if (data.type === 'diagnosticsCopied') { $('copy-status').textContent = 'コピーしました'; return; }
+    if (data.type === 'snapshot') {
+      const message = state.messages?.[data.index];
+      if (message && typeof data.text === 'string') { message.text = data.text; renderMessages(); }
+      return;
+    }
     if (data.type !== 'state') return;
     state = data;
-    const scroller = $('conversation');
-    const stick = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
     $('status').textContent = data.status;
     $('dot').className = data.diagnostics?.code ? 'problem' : (data.ready ? 'online' : '');
     const diagnostic = data.diagnostics || {};
@@ -89,41 +138,11 @@
     $('error-code').textContent = diagnostic.code ? `診断分類: ${diagnostic.code}` : '';
     if (diagnostic.code) showDiagnostics(true);
     $('copy-status').textContent = '';
-    $('welcome').hidden = data.messages.length > 0;
-    $('messages').replaceChildren();
-    data.messages.forEach((message, index) => {
-      const article = document.createElement('article'); article.className = message.role;
-      const heading = document.createElement('div'); heading.className = 'message-heading';
-      const label = document.createElement('strong'); label.textContent = message.role === 'user' ? 'あなた' : 'LOCAL FM';
-      heading.append(label);
-      if (message.text) {
-        const copy = document.createElement('button'); copy.className = 'quiet'; copy.textContent = 'コピー';
-        copy.setAttribute('aria-label', `${index + 1}番目のメッセージをコピー`);
-        copy.onclick = () => vscode.postMessage({ type: 'copy', index }); heading.append(copy);
-      }
-      article.append(heading); content(article, message.text || (data.busy ? '考えています…' : '応答はありません。'), message.role === 'assistant' && !!message.text);
-      if (message.edit) {
-        const edit = message.edit;
-        const actions = document.createElement('div'); actions.className = 'edit-actions';
-        const notes = { generating: '選択テキストを処理中…', generated: '差分を確認してから適用できます。', previewed: '差分を開きました。内容を確認して適用してください。', applying: '適用中…', applied: '適用しました。元に戻すにはエディタでUndo。', stale: '元の文章が変更されたか閉じられました。選択し直して実行してください。', failed: '生成が完了しなかったため適用できません。', discarded: 'この候補は破棄しました。' };
-        const note = document.createElement('small'); note.textContent = `${edit.label} · ${notes[edit.state] || ''}`; actions.append(note);
-        const button = (label, type) => {
-          const node = document.createElement('button'); node.type = 'button'; node.textContent = label;
-          node.onclick = () => vscode.postMessage({ type, id: edit.id }); actions.append(node);
-        };
-        if (['generated', 'previewed'].includes(edit.state)) button('差分を見る', 'previewEdit');
-        if (edit.state === 'previewed') button('選択範囲に適用', 'applyEdit');
-        if (['generated', 'previewed', 'stale', 'failed'].includes(edit.state)) button('破棄', 'discardEdit');
-        article.append(actions);
-      }
-      if (message.incomplete && !data.busy) { const note = document.createElement('small'); note.textContent = '未完了 · 次の会話には含まれません'; article.append(note); }
-      $('messages').append(article);
-    });
+    renderMessages();
     $('attachment').hidden = !data.attachment;
     $('attachment').querySelector('span').textContent = `選択テキスト · ${data.attachment.length.toLocaleString()}文字`;
     $('attachment').title = data.attachment;
     controls();
-    if (stick) scroller.scrollTop = scroller.scrollHeight;
   });
   $('composer').onsubmit = event => {
     event.preventDefault();

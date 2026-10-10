@@ -44,6 +44,10 @@ func emit(_ value: [String: Any]) {
         if CommandLine.arguments.contains("--status") {
             emit(["type": "ready"]); return
         }
+        // The extension may start this process before the user sends anything; load the model
+        // while blocked on stdin so the first token arrives sooner.
+        let base = LanguageModelSession(instructions: "You are a helpful assistant. Respond in the user's language. Be concise and honest about uncertainty.")
+        base.prewarm()
         do {
             let request = try JSONDecoder().decode(Request.self, from: FileHandle.standardInput.readDataToEndOfFile())
             guard !request.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -51,7 +55,6 @@ func emit(_ value: [String: Any]) {
                   request.history.allSatisfy({ ["user", "assistant"].contains($0.role) && $0.text.count <= Limits.historyText }) else {
                 emit(["type": "error", "code": "invalidInput", "message": "入力が長すぎるか、不正です。"]); return
             }
-            let base = LanguageModelSession(instructions: "You are a helpful assistant. Respond in the user's language. Be concise and honest about uncertainty.")
             var entries = Array(base.transcript)
             for turn in request.history {
                 let segments: [Transcript.Segment] = [.text(Transcript.TextSegment(content: turn.text))]

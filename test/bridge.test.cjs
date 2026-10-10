@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const { parseEvent, checkStatus, generate } = require('../dist/bridge');
+const { parseEvent, checkStatus, generate, prepare } = require('../dist/bridge');
 
 function fixture(t, source) {
   const directory = mkdtempSync(join(tmpdir(), 'local-fm-test-'));
@@ -66,4 +66,30 @@ test('response events cannot count as a successful availability check', async t 
     const file = fixture(t, `console.log('${line}');`);
     await assert.rejects(checkStatus(file).done, e => e.code === 'protocolError');
   }
+});
+test('a spare helper waits for the request and is used once', async t => {
+  const file = fixture(t, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{console.log(JSON.stringify({type:'snapshot',text:'pid'+process.pid+':'+JSON.parse(input).prompt}));console.log('{"type":"done"}');});`);
+  const spare = prepare(file);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const events = [];
+  await generate(file, { prompt: 'warm', history: [] }, e => events.push(e), undefined, spare).done;
+  assert.match(events[0].text, /:warm$/);
+  assert.equal(spare.take(), undefined);
+  spare.dispose();
+});
+test('a spare that failed or exited falls back to a fresh helper', async t => {
+  const file = fixture(t, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{console.log(JSON.stringify({type:'snapshot',text:JSON.parse(input).prompt}));console.log('{"type":"done"}');});`);
+  const exited = fixture(t, `console.log('{"type":"error","message":"準備中","code":"modelNotReady"}');`);
+  for (const spare of [prepare('/missing-local-fm-helper'), prepare(exited)]) {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const events = [];
+    await generate(file, { prompt: 'fresh', history: [] }, e => events.push(e), undefined, spare).done;
+    assert.deepEqual(events, [{ type: 'snapshot', text: 'fresh' }, { type: 'done' }]);
+  }
+});
+test('disposing an idle spare stops it', async t => {
+  const file = fixture(t, `setTimeout(()=>{},10000);`);
+  const spare = prepare(file);
+  spare.dispose();
+  assert.equal(spare.take(), undefined);
 });
