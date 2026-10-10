@@ -14,14 +14,61 @@
     $('send').hidden = state.busy;
     $('refresh').disabled = state.busy;
   }
-  // Model output is always text, never trusted HTML. Fenced code gets a pre block.
-  function content(parent, text) {
+  // Model output is always text, never trusted HTML. Fenced code gets a pre block;
+  // with markdown on, a small subset is built as DOM nodes so nothing is parsed as HTML.
+  function content(parent, text, markdown) {
     const parts = text.split(/```[^\n]*\n([\s\S]*?)(?:```|$)/g);
     parts.forEach((part, index) => {
       if (!part) return;
+      if (markdown && index % 2 === 0) { blocks(parent, part); return; }
       const node = document.createElement(index % 2 ? 'pre' : 'div');
       node.className = 'body-text'; node.textContent = part; parent.append(node);
     });
+  }
+  // Headings, bullet/numbered lists, rules and paragraphs. Unclosed markers stay literal,
+  // so text mid-stream reads naturally until the closing marker arrives.
+  function blocks(parent, text) {
+    let paragraph = null, list = null;
+    const close = () => { paragraph = null; list = null; };
+    for (const line of text.split('\n')) {
+      const heading = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
+      const item = line.match(/^(\s*)([*+-]|\d+[.)])\s+(.*)$/);
+      if (!line.trim()) { close(); continue; }
+      if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { close(); parent.append(document.createElement('hr')); continue; }
+      if (heading) {
+        close(); const node = document.createElement('div');
+        node.className = `md-heading md-h${heading[1].length}`; inline(node, heading[2]); parent.append(node); continue;
+      }
+      if (item) {
+        const ordered = /\d/.test(item[2]);
+        const nested = list && item[1].replace(/\t/g, '  ').length >= 2;
+        const owner = nested ? (list.sub?.parentNode === list.lastChild ? list.sub : null) : list;
+        let target = owner && owner.ordered === ordered ? owner : null;
+        if (!target) {
+          paragraph = null; target = document.createElement(ordered ? 'ol' : 'ul'); target.ordered = ordered;
+          if (ordered && parseInt(item[2], 10) !== 1) target.start = parseInt(item[2], 10);
+          if (nested) { list.lastChild.append(target); list.sub = target; } else { parent.append(target); list = target; }
+        }
+        const node = document.createElement('li');
+        inline(node, item[3]); target.append(node); continue;
+      }
+      if (list && /^\s+\S/.test(line)) { const last = list.lastChild; last.append(document.createElement('br')); inline(last, line.trim()); continue; }
+      list = null;
+      if (paragraph) paragraph.append(document.createElement('br'));
+      else { paragraph = document.createElement('p'); paragraph.className = 'md-paragraph'; parent.append(paragraph); }
+      inline(paragraph, line);
+    }
+  }
+  function inline(parent, text) {
+    const pattern = /`([^`\n]+)`|\*\*(?=\S)(.*?\S)\*\*|__(?=\S)(.*?\S)__|(?<![\w*])\*(?=[^\s*])(.*?[^\s*])\*(?!\*)/g;
+    let last = 0, match;
+    while ((match = pattern.exec(text))) {
+      parent.append(text.slice(last, match.index)); last = pattern.lastIndex;
+      if (match[1] !== undefined) { const code = document.createElement('code'); code.textContent = match[1]; parent.append(code); continue; }
+      const node = document.createElement(match[4] !== undefined ? 'em' : 'strong');
+      inline(node, match[2] ?? match[3] ?? match[4]); parent.append(node);
+    }
+    parent.append(text.slice(last));
   }
   window.addEventListener('message', ({ data }) => {
     if (data.type === 'accepted') { prompt.value = ''; vscode.setState({ draft: '' }); fit(); controls(); return; }
@@ -54,7 +101,7 @@
         copy.setAttribute('aria-label', `${index + 1}番目のメッセージをコピー`);
         copy.onclick = () => vscode.postMessage({ type: 'copy', index }); heading.append(copy);
       }
-      article.append(heading); content(article, message.text || (data.busy ? '考えています…' : '応答はありません。'));
+      article.append(heading); content(article, message.text || (data.busy ? '考えています…' : '応答はありません。'), message.role === 'assistant' && !!message.text);
       if (message.edit) {
         const edit = message.edit;
         const actions = document.createElement('div'); actions.className = 'edit-actions';

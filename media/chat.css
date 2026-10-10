@@ -36,6 +36,16 @@ article { padding: 20px 0; border-bottom: 1px solid var(--vscode-widget-border, 
 .assistant .message-heading strong { color: var(--vscode-textLink-foreground); }
 .message-heading button { font-size: 11px; letter-spacing: 0; padding: 2px 6px; }
 .body-text { white-space: pre-wrap; }
+.md-paragraph { margin: 0 0 10px; }
+.md-heading { font-weight: 600; margin: 14px 0 6px; line-height: 1.5; }
+.md-h1, .md-h2 { font-size: 1.15em; }
+.md-h3 { font-size: 1.05em; }
+article ul, article ol { margin: 0 0 10px; padding-left: 1.4em; }
+article li { margin: 2px 0; }
+article li > ul, article li > ol { margin: 2px 0 0; }
+article hr { border: none; border-top: 1px solid var(--vscode-widget-border, #8884); margin: 12px 0; }
+article code { font-family: var(--vscode-editor-font-family, monospace); font-size: .92em; background: var(--vscode-textCodeBlock-background); padding: 1px 4px; border-radius: 4px; }
+article > :last-child { margin-bottom: 0; }
 pre { background: var(--vscode-textCodeBlock-background); padding: 12px; border: 1px solid var(--vscode-widget-border, #8884); border-radius: 6px; font-family: var(--vscode-editor-font-family, monospace); overflow-x: auto; white-space: pre !important; font-size: 12px; }
 article small { color: var(--vscode-descriptionForeground); display: block; margin-top: 8px; font-size: 11px; }
 .edit-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
