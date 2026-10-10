@@ -4,6 +4,13 @@ import FoundationModels
 struct Turn: Decodable { let role: String; let text: String }
 struct Request: Decodable { let prompt: String; let history: [Turn] }
 
+// Keep in sync with src/limits.ts (checked by test/limits.test.cjs).
+enum Limits {
+    static let prompt = 12000
+    static let historyTurns = 100
+    static let historyText = 24000
+}
+
 func emit(_ value: [String: Any]) {
     if let data = try? JSONSerialization.data(withJSONObject: value) {
         FileHandle.standardOutput.write(data)
@@ -40,8 +47,8 @@ func emit(_ value: [String: Any]) {
         do {
             let request = try JSONDecoder().decode(Request.self, from: FileHandle.standardInput.readDataToEndOfFile())
             guard !request.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  request.prompt.count <= 12000, request.history.count <= 100,
-                  request.history.allSatisfy({ ["user", "assistant"].contains($0.role) && $0.text.count <= 24000 }) else {
+                  request.prompt.count <= Limits.prompt, request.history.count <= Limits.historyTurns,
+                  request.history.allSatisfy({ ["user", "assistant"].contains($0.role) && $0.text.count <= Limits.historyText }) else {
                 emit(["type": "error", "code": "invalidInput", "message": "入力が長すぎるか、不正です。"]); return
             }
             let base = LanguageModelSession(instructions: "You are a helpful assistant. Respond in the user's language. Be concise and honest about uncertainty.")

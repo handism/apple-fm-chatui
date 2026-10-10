@@ -1,5 +1,9 @@
-export type FailureCode = 'unsupportedOS' | 'deviceNotEligible' | 'appleIntelligenceNotEnabled' | 'modelNotReady' | 'unavailable' | 'contextLimit' | 'refusal' | 'unsupportedLanguage' | 'rateLimited' | 'invalidInput' | 'generationFailed' | 'launchFailed' | 'timeout' | 'processExited' | 'protocolError' | 'cancelled';
-export const failureCodes: FailureCode[] = ['unsupportedOS', 'deviceNotEligible', 'appleIntelligenceNotEnabled', 'modelNotReady', 'unavailable', 'contextLimit', 'refusal', 'unsupportedLanguage', 'rateLimited', 'invalidInput', 'generationFailed', 'launchFailed', 'timeout', 'processExited', 'protocolError', 'cancelled'];
+export const failureCodes = ['unsupportedOS', 'deviceNotEligible', 'appleIntelligenceNotEnabled', 'modelNotReady', 'unavailable', 'contextLimit', 'refusal', 'unsupportedLanguage', 'rateLimited', 'invalidInput', 'generationFailed', 'launchFailed', 'timeout', 'processExited', 'protocolError', 'cancelled'] as const;
+export type FailureCode = typeof failureCodes[number];
+export function isFailureCode(value: unknown): value is FailureCode { return (failureCodes as readonly unknown[]).includes(value); }
+// Failures after which the model must be re-checked before the next request.
+const fatalCodes: ReadonlySet<FailureCode> = new Set(['unsupportedOS', 'deviceNotEligible', 'appleIntelligenceNotEnabled', 'modelNotReady', 'unavailable', 'launchFailed', 'processExited', 'protocolError']);
+export function isFatal(code: FailureCode): boolean { return fatalCodes.has(code); }
 export class DiagnosticError extends Error {
   constructor(message: string, public readonly code: FailureCode, public readonly nativeDomain?: string, public readonly nativeCode?: number) { super(message); }
 }

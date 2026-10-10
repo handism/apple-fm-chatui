@@ -20,23 +20,30 @@ test('view sends completed history, rejects double send, and ignores stale compl
   const original = Module._load;
   Module._load = function (id, ...args) {
     if (id === 'vscode') return vscode;
-    if (id === './bridge') return { runHelper: (binary, request, onEvent) => {
-      let resolve, reject;
-      const done = new Promise((yes, no) => { resolve = yes; reject = no; });
-      const job = { request, onEvent, resolve, reject, done, cancel() { /* Simulate a late completion. */ } };
-      jobs.push(job); return job;
-    } };
+    if (id === './bridge') {
+      const job = (request, onEvent) => {
+        let resolve, reject;
+        const done = new Promise((yes, no) => { resolve = yes; reject = no; });
+        const job = { request, onEvent, resolve, reject, done, cancel() { /* Simulate a late completion. */ } };
+        jobs.push(job); return job;
+      };
+      return { checkStatus: () => job(undefined, () => {}), generate: (binary, request, onEvent) => job(request, onEvent) };
+    }
     return original.call(this, id, ...args);
   };
   try {
     delete require.cache[require.resolve('../dist/extension')];
     require('../dist/extension').activate({ extensionUri: { fsPath: process.cwd() }, extension: { packageJSON: { version: "0.1.1" } }, subscriptions: [] });
   } finally { Module._load = original; }
-  provider.resolveWebviewView({ webview: {
+  const webview = {
     cspSource: 'vscode-webview:', asWebviewUri: x => x,
     postMessage: data => { states.push(structuredClone(data)); return Promise.resolve(true); },
     onDidReceiveMessage: fn => { listener = fn; return { dispose() {} }; }
-  }, onDidDispose: () => ({ dispose() {} }) });
+  };
+  provider.resolveWebviewView({ webview, onDidDispose: () => ({ dispose() {} }) });
+  assert.doesNotMatch(webview.html, /\{\{/);
+  assert.match(webview.html, /maxlength="12000"/);
+  assert.match(webview.html, /script-src 'nonce-([^']+)'[\s\S]*<script nonce="\1" src="media\/chat\.js">/);
   const tick = () => new Promise(resolve => setImmediate(resolve));
   listener({ type: 'ready' }); jobs[0].resolve(); await tick();
   assert.match(states.at(-1).status, /応答はまだ未確認/);

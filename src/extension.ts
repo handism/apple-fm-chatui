@@ -1,8 +1,10 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { release } from 'node:os';
-import { runHelper, Turn } from './bridge';
-import { DiagnosticError, diagnosticFailure, recovery } from './diagnostics';
+import { checkStatus, generate, Job, Turn } from './bridge';
+import { DiagnosticError, diagnosticFailure, isFatal, recovery } from './diagnostics';
+import { limits } from './limits';
 import { SelectionEdits, SelectionEdit, SelectionAction, selectionActions } from './selection';
 
 type Message = Turn & { incomplete?: boolean; editId?: string };
@@ -10,7 +12,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view?: vscode.WebviewView;
   private messages: Message[] = [];
   private history: Turn[] = [];
-  private active?: ReturnType<typeof runHelper>;
+  private active?: Job;
   private generation = 0;
   private busy = false;
   private ready = false;
@@ -28,13 +30,12 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     this.view = view;
     view.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'media')] };
     const asset = (name: string) => view.webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', name));
-    const nonce = randomBytes(18).toString('base64');
-    view.webview.html = `<!doctype html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${view.webview.cspSource}; script-src 'nonce-${nonce}';"><link rel="stylesheet" href="${asset('chat.css')}"></head><body>
-      <header class="topbar"><button id="status-toggle" class="quiet" aria-expanded="false" aria-controls="diagnostics" title="モデルの状態・診断"><span id="dot"></span><span id="status" role="status"></span><span class="chevron" aria-hidden="true">▾</span></button><button id="refresh" class="quiet icon" title="再確認" aria-label="再確認">↻</button><button id="reset" class="quiet icon" title="履歴を消して新しい会話" aria-label="新しい会話">＋</button></header>
-      <section id="diagnostics" aria-label="モデルの状態・診断" hidden><p id="availability"></p><p id="response-check"></p><p id="recovery" role="status" hidden></p><p id="error-code" hidden></p><button id="copy-diagnostics" class="quiet">診断情報をコピー</button><span id="copy-status" role="status"></span><small>会話本文・添付・ファイルパスは含みません。</small></section>
-      <main id="conversation" aria-label="会話"><section id="welcome"><div class="eyebrow">ON YOUR MAC</div><h1>ちょっと聞く。<br>さっと整える。</h1><p>Apple Foundation Modelsと話そう。<br>文章の整理も、アイデア出しも、ここから。</p><div class="suggestions"><button data-prompt="これから貼る文章を、要点3つにまとめてください。">文章を要約する</button><button data-prompt="これから貼る文章を、自然で読みやすい日本語に整えてください。">言葉を整える</button><button data-prompt="気分転換になる短い休憩のアイデアを3つください。">アイデアを広げる</button></div></section><div id="messages"></div></main>
-      <footer><div id="attachment" hidden><span></span><button id="remove" class="quiet" aria-label="添付を解除">×</button></div><form id="composer"><label for="prompt" class="sr-only">メッセージ</label><textarea id="prompt" rows="2" maxlength="12000" placeholder="メッセージを入力（Shift+Enterで改行）"></textarea><div class="compose-actions"><button id="attach" type="button" class="quiet" title="エディタで選択したテキストを添付">＋ 選択テキスト</button><button id="stop" type="button" hidden>停止</button><button id="send" type="submit">送信 ↑</button></div></form><p class="footnote">端末内で処理 · 履歴は保存しません</p></footer><script nonce="${nonce}" src="${asset('chat.js')}"></script></body></html>`;
-    this.context.subscriptions.push(view.webview.onDidReceiveMessage((message: unknown) => {
+    const values: Record<string, string> = { cspSource: view.webview.cspSource, nonce: randomBytes(18).toString('base64'),
+      chatCss: asset('chat.css').toString(), chatJs: asset('chat.js').toString(), promptLimit: String(limits.prompt) };
+    const template = readFileSync(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'chat.html').fsPath, 'utf8');
+    view.webview.html = template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => values[key]);
+    // Scoped to this view: VS Code resolves a new view each time the sidebar view is recreated.
+    const subscriptions = [view.webview.onDidReceiveMessage((message: unknown) => {
       if (!message || typeof message !== 'object') return;
       const data = message as Record<string, unknown>;
       switch (data.type) {
@@ -56,7 +57,8 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
         case 'removeAttachment': this.attachment = ''; this.publish(); break;
         case 'copy': if (typeof data.index === 'number' && Number.isInteger(data.index) && this.messages[data.index]) void vscode.env.clipboard.writeText(this.messages[data.index].text); break;
       }
-    }), view.onDidDispose(() => { this.view = undefined; this.stop(); }));
+    })];
+    subscriptions.push(view.onDidDispose(() => { for (const item of subscriptions) item.dispose(); this.view = undefined; this.stop(); }));
   }
   private publish() {
     void this.view?.webview.postMessage({ type: 'state', messages: this.messages.map(message => ({ ...message, edit: message.editId ? this.edits.summary(message.editId) : undefined })), busy: this.busy, ready: this.ready, status: this.status, attachment: this.attachment,
@@ -68,7 +70,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     this.failure = diagnosticFailure(error); this.failurePhase = phase;
     if (phase === 'availability') this.availability = 'unavailableOrFailed';
     this.status = this.failure.message;
-    if (['unsupportedOS', 'deviceNotEligible', 'appleIntelligenceNotEnabled', 'modelNotReady', 'unavailable', 'launchFailed', 'processExited', 'protocolError'].includes(this.failure.code)) this.ready = false;
+    if (isFatal(this.failure.code)) this.ready = false;
   }
   private async copyDiagnostics() {
     const report = {
@@ -92,7 +94,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     this.stop();
     const id = ++this.generation;
     this.busy = true; this.ready = false; this.failure = undefined; this.status = 'モデルを確認しています…'; this.publish();
-    const job = runHelper(this.binary(), undefined, () => {}, 15000);
+    const job = checkStatus(this.binary());
     this.active = job;
     try { await job.done; if (id === this.generation) { this.ready = true; this.availability = 'available'; this.lastCheckedAt = new Date().toISOString(); this.status = this.availableStatus(); } }
     catch (error) { if (id === this.generation) { this.lastCheckedAt = new Date().toISOString(); this.fail(error, 'availability'); } }
@@ -101,15 +103,16 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private async send(text: string, edit?: SelectionEdit) {
     if (this.busy || !this.ready || !text.trim()) return;
     const prompt = !edit && this.attachment ? `${text.trim()}\n\n添付テキスト:\n${this.attachment}` : text.trim();
-    if (prompt.length > 12000) { this.status = '入力と添付の合計を12,000文字以内にしてください。'; this.publish(); return; }
-    if (!edit && this.history.length >= 100) { this.status = '会話が長くなりました。「新しい会話」で続けてください。'; this.publish(); return; }
+    if (prompt.length > limits.prompt) { this.status = `入力と添付の合計を${count(limits.prompt)}文字以内にしてください。`; this.publish(); return; }
+    // Each exchange adds two turns; stop before the next one would exceed the helper's limit.
+    if (!edit && this.history.length + 2 > limits.historyTurns) { this.status = '会話が長くなりました。「新しい会話」で続けてください。'; this.publish(); return; }
     const id = ++this.generation;
     this.busy = true; this.failure = undefined; if (!edit) this.attachment = ''; this.activeEdit = edit; this.status = 'このMacで生成中…';
     this.messages.push({ role: 'user', text: edit ? `${selectionActions[edit.action].label}\n\n${edit.selected}` : prompt });
     const answer: Message = { role: 'assistant', text: '', incomplete: true, ...(edit ? { editId: edit.id } : {}) };
     this.messages.push(answer); this.publish();
     if (!edit) void this.view?.webview.postMessage({ type: 'accepted' });
-    const job = runHelper(this.binary(), { prompt, history: edit ? [] : this.history }, event => {
+    const job = generate(this.binary(), { prompt, history: edit ? [] : this.history }, event => {
       if (id !== this.generation) return;
       if (event.type === 'snapshot') { answer.text = event.text; this.publish(); }
     });
@@ -137,7 +140,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     const editor = vscode.window.activeTextEditor;
     const text = editor?.document.getText(editor.selection) || '';
     if (!text.trim()) { void vscode.window.showInformationMessage('エディタで添付するテキストを選択してください。'); return; }
-    if (text.length > 8000) { void vscode.window.showWarningMessage('添付は8,000文字以内にしてください。'); return; }
+    if (text.length > limits.selection) { void vscode.window.showWarningMessage(`添付は${count(limits.selection)}文字以内にしてください。`); return; }
     this.attachment = text;
     await vscode.commands.executeCommand('localFM.chat.focus'); this.publish();
   }
@@ -145,22 +148,23 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     if (this.busy) { void vscode.window.showInformationMessage('現在の生成や状態確認が終わってから実行してください。'); return; }
     const edit = this.edits.capture(action);
     if (!edit) return;
-    if (!this.ready) await this.check();
-    if (!this.ready || this.busy || !this.edits.current(edit)) {
+    // The model check and focusing the view are awaited; the source may change or another request may start meanwhile.
+    const startable = () => {
+      if (this.ready && !this.busy && this.edits.current(edit)) return true;
       if (!this.edits.current(edit)) void vscode.window.showInformationMessage('元の文章が変わったため処理を開始できません。選択し直してください。');
-      this.edits.abandon(edit); this.publish(); return;
-    }
+      this.edits.abandon(edit); this.publish(); return false;
+    };
+    if (!this.ready) await this.check();
+    if (!startable()) return;
     try {
       await vscode.commands.executeCommand('localFM.chat.focus');
-      if (this.busy || !this.ready || !this.edits.current(edit)) {
-        if (!this.edits.current(edit)) void vscode.window.showInformationMessage('元の文章が変わったため処理を開始できません。選択し直してください。');
-        this.edits.abandon(edit); this.publish(); return;
-      }
+      if (!startable()) return;
       await this.send(this.edits.prompt(edit), edit);
     } catch { this.edits.abandon(edit); this.publish(); void vscode.window.showWarningMessage('選択テキストの処理を開始できませんでした。'); }
   }
   dispose() { this.stop(); this.edits.dispose(); }
 }
+const count = (value: number) => value.toLocaleString('en-US');
 export function activate(context: vscode.ExtensionContext) {
   const provider = new ChatProvider(context);
   context.subscriptions.push(provider,

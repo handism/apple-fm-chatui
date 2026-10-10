@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}}; script-src 'nonce-{{nonce}}';">
+  <link rel="stylesheet" href="{{chatCss}}">
+</head>
+<body>
+  <header class="topbar">
+    <button id="status-toggle" class="quiet" aria-expanded="false" aria-controls="diagnostics" title="モデルの状態・診断"><span id="dot"></span><span id="status" role="status"></span><span class="chevron" aria-hidden="true">▾</span></button>
+    <button id="refresh" class="quiet icon" title="再確認" aria-label="再確認">↻</button>
+    <button id="reset" class="quiet icon" title="履歴を消して新しい会話" aria-label="新しい会話">＋</button>
+  </header>
+  <section id="diagnostics" aria-label="モデルの状態・診断" hidden>
+    <p id="availability"></p>
+    <p id="response-check"></p>
+    <p id="recovery" role="status" hidden></p>
+    <p id="error-code" hidden></p>
+    <button id="copy-diagnostics" class="quiet">診断情報をコピー</button><span id="copy-status" role="status"></span>
+    <small>会話本文・添付・ファイルパスは含みません。</small>
+  </section>
+  <main id="conversation" aria-label="会話">
+    <section id="welcome">
+      <div class="eyebrow">ON YOUR MAC</div>
+      <h1>ちょっと聞く。<br>さっと整える。</h1>
+      <p>Apple Foundation Modelsと話そう。<br>文章の整理も、アイデア出しも、ここから。</p>
+      <div class="suggestions">
+        <button data-prompt="これから貼る文章を、要点3つにまとめてください。">文章を要約する</button>
+        <button data-prompt="これから貼る文章を、自然で読みやすい日本語に整えてください。">言葉を整える</button>
+        <button data-prompt="気分転換になる短い休憩のアイデアを3つください。">アイデアを広げる</button>
+      </div>
+    </section>
+    <div id="messages"></div>
+  </main>
+  <footer>
+    <div id="attachment" hidden><span></span><button id="remove" class="quiet" aria-label="添付を解除">×</button></div>
+    <form id="composer">
+      <label for="prompt" class="sr-only">メッセージ</label>
+      <textarea id="prompt" rows="2" maxlength="{{promptLimit}}" placeholder="メッセージを入力（Shift+Enterで改行）"></textarea>
+      <div class="compose-actions">
+        <button id="attach" type="button" class="quiet" title="エディタで選択したテキストを添付">＋ 選択テキスト</button>
+        <button id="stop" type="button" hidden>停止</button>
+        <button id="send" type="submit">送信 ↑</button>
+      </div>
+    </form>
+    <p class="footnote">端末内で処理 · 履歴は保存しません</p>
+  </footer>
+  <script nonce="{{nonce}}" src="{{chatJs}}"></script>
+</body>
+</html>

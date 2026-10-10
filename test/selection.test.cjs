@@ -87,7 +87,7 @@ test('editing anywhere in source invalidates generated and previewed suggestions
   for (const previewed of [false, true]) {
     const s = setup(), edit = s.manager.capture('rewrite'); s.manager.complete(edit, 'replacement');
     if (previewed) await s.manager.preview(edit.id);
-    s.mutate(edit.before + '!'); s.mutate(edit.before);
+    const original = s.document.text; s.mutate(original + '!'); s.mutate(original);
     await s.manager.preview(edit.id); await s.manager.apply(edit.id);
     assert.equal(s.manager.summary(edit.id).state, 'stale'); assert.equal(s.editCalls(), 0);
     s.manager.dispose();

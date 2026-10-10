@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { limits } from './limits';
 
 export const selectionActions = {
   summarize: { label: '要約', instruction: '要点を保ち、短く要約してください。' },
@@ -11,9 +12,13 @@ export type SelectionAction = keyof typeof selectionActions;
 type EditState = 'generating' | 'generated' | 'previewed' | 'applying' | 'applied' | 'stale' | 'failed' | 'discarded';
 export type SelectionEdit = {
   id: string; action: SelectionAction; document: vscode.TextDocument; version: number;
-  range: vscode.Range; start: number; end: number; before: string; selected: string;
+  range: vscode.Range; start: number; end: number; selected: string;
+  /** SHA-256 of the whole source at capture time; keeps up to 20 edits from each holding a copy of the document. */
+  fingerprint: string;
   replacement?: string; state: EditState;
 };
+
+const fingerprint = (text: string) => createHash('sha256').update(text).digest('hex');
 
 export class SelectionEdits implements vscode.Disposable {
   private edits = new Map<string, SelectionEdit>();
@@ -36,14 +41,14 @@ export class SelectionEdits implements vscode.Disposable {
     const document = editor.document;
     const range = new vscode.Range(editor.selection.start, editor.selection.end);
     const selected = document.getText(range);
-    if (!selected.trim() || selected.length > 8000) {
-      void vscode.window.showWarningMessage('空白だけの選択は処理できません。選択テキストは8,000文字以内にしてください。'); return;
+    if (!selected.trim() || selected.length > limits.selection) {
+      void vscode.window.showWarningMessage(`空白だけの選択は処理できません。選択テキストは${limits.selection.toLocaleString('en-US')}文字以内にしてください。`); return;
     }
-    if (this.edits.size >= 20) {
-      void vscode.window.showInformationMessage('編集候補が20件になりました。「新しい会話」でリセットしてから続けてください。'); return;
+    if (this.edits.size >= limits.edits) {
+      void vscode.window.showInformationMessage(`編集候補が${limits.edits}件になりました。「新しい会話」でリセットしてから続けてください。`); return;
     }
     const edit: SelectionEdit = { id: randomBytes(12).toString('hex'), action, document, version: document.version,
-      range, start: document.offsetAt(range.start), end: document.offsetAt(range.end), before: document.getText(), selected, state: 'generating' };
+      range, start: document.offsetAt(range.start), end: document.offsetAt(range.end), selected, fingerprint: fingerprint(document.getText()), state: 'generating' };
     this.edits.set(edit.id, edit); return edit;
   }
   prompt(edit: SelectionEdit): string {
@@ -51,7 +56,7 @@ export class SelectionEdits implements vscode.Disposable {
   }
   current(edit: SelectionEdit): boolean {
     return this.edits.get(edit.id) === edit && !edit.document.isClosed &&
-      edit.document.version === edit.version && edit.document.getText() === edit.before;
+      edit.document.version === edit.version && fingerprint(edit.document.getText()) === edit.fingerprint;
   }
   complete(edit: SelectionEdit, text: string) {
     if (this.edits.get(edit.id) !== edit) return;
@@ -83,8 +88,10 @@ export class SelectionEdits implements vscode.Disposable {
     if (!this.current(edit)) { edit.state = 'stale'; this.changed(); return; }
     const before = vscode.Uri.parse(`local-fm-preview:/${id}/before.txt`);
     const after = vscode.Uri.parse(`local-fm-preview:/${id}/after.txt`);
-    this.previews.set(before.toString(), edit.before);
-    this.previews.set(after.toString(), edit.before.slice(0, edit.start) + edit.replacement + edit.before.slice(edit.end));
+    // current() has just verified the source still matches the captured fingerprint.
+    const source = edit.document.getText();
+    this.previews.set(before.toString(), source);
+    this.previews.set(after.toString(), source.slice(0, edit.start) + edit.replacement + source.slice(edit.end));
     try {
       await vscode.commands.executeCommand('vscode.diff', before, after, `Local FM: ${selectionActions[edit.action].label}（変更前 ↔ 変更後）`, { preview: true, viewColumn: vscode.ViewColumn.Beside });
       if (this.current(edit) && edit.state === 'generated') edit.state = 'previewed';
