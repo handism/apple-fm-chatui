@@ -68,3 +68,9 @@
 - 拡張側でバイト列からPNG/JPEGを判定し、申告MIMEは無視。URIは`file`（ローカル）とワークスペース内の`vscode-remote`のみ許可し、クエリ・フラグメント・PNG/JPEG以外の拡張子を拒否。リセット・削除・別の選択の後に届いた古いドロップはトークンで破棄する。
 - `npm run check`、`node --check media/chat.js`、`git diff --check`、`npm test`（34件）、SDK 27.0での`npm run package`成功。新しいヘルパーの`--status`は`images: true`。
 - 実VS CodeでのFinder／ファイル一覧からのドロップ操作は開発側では未確認。
+
+## 2026-10-11 ファイル一覧の右クリックで画像添付（0.4.2）
+
+- 利用者の実機確認: Finderからのドロップは成功。ファイル一覧からのShift＋ドロップは、確認用ビルドでWebviewに`dragenter`1回・`drop`1回のみ届き`dragover`が0回。VS Codeがドラッグ中にWebviewのpointer-eventsを切り替えるため、受け付けが断続的になる。ドロップできた場合のURI読み取りは成功。
+- 確実な代替として、ファイル一覧のPNG/JPEGの右クリックに「Local FM: 画像をチャットに添付」を追加。ドロップと同じURI検証と、バイト列による形式判定を使う。チャットを開いた直後のモデル確認は完了を待ってから添付する。コマンドパレットから実行した場合はファイル選択ダイアログを開く。
+- `npm run check`、`npm test`（35件）、SDK 27.0での`npm run package`成功。

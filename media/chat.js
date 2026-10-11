@@ -150,7 +150,7 @@
     $('image-attachment').hidden = !data.image;
     if (data.image) { $('image-preview').src = `data:${data.image.mime};base64,${data.image.data}`; $('image-name').textContent = data.image.name; }
     else { $('image-preview').removeAttribute('src'); $('image-name').textContent = ''; }
-    $('image-support').textContent = data.imagesSupported ? 'PNG / JPEG・10 MBまで。ファイル一覧からはShift＋ドロップ' : '画像入力にはmacOS 27以降と対応ビルドが必要です';
+    $('image-support').textContent = data.imagesSupported ? 'PNG / JPEG・10 MBまで。ファイル一覧からは右クリックで添付' : '画像入力にはmacOS 27以降と対応ビルドが必要です';
     controls();
   });
   $('composer').onsubmit = event => {

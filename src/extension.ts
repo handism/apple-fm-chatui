@@ -107,7 +107,9 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     catch { void vscode.window.showWarningMessage('診断情報をコピーできませんでした。'); }
   }
   private binary() { return vscode.Uri.joinPath(this.context.extensionUri, 'bin', 'local-fm').fsPath; }
-  private async check() {
+  private checking?: Promise<void>;
+  private check() { return this.checking = this.runCheck(); }
+  private async runCheck() {
     if (process.platform !== 'darwin' || process.arch !== 'arm64') {
       this.fail(new DiagnosticError('Apple Silicon搭載のMacでご利用ください。', 'deviceNotEligible'), 'availability'); this.publish(); return;
     }
@@ -178,7 +180,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     this.active = undefined; this.busy = false; this.warmSpare(); this.publish();
   }
   private imageToken() { return `${this.generation}:${this.imageSelection}`; }
-  private async attachImage(drop?: Record<string, unknown>) {
+  private async attachImage(drop?: Record<string, unknown>, file?: vscode.Uri) {
     if (this.busy || !this.ready || !this.imagesSupported) return;
     const selection = ++this.imageSelection;
     const generation = this.generation;
@@ -190,13 +192,10 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
         this.publish(); return;
       }
       let files: readonly vscode.Uri[] | undefined;
-      if (drop) {
+      if (file) files = [imageUri(file)];
+      else if (drop) {
         if (typeof drop.uri !== 'string' || drop.uri.length > 8192) throw new Error('Invalid URI');
-        const uri = vscode.Uri.parse(drop.uri, true);
-        const local = uri.scheme === 'file' && (!uri.authority || uri.authority === 'localhost');
-        const remote = uri.scheme === 'vscode-remote' && !!vscode.workspace.getWorkspaceFolder(uri);
-        if ((!local && !remote) || uri.query || uri.fragment || !/\.(png|jpe?g)$/i.test(uri.path)) throw new Error('Unsupported URI');
-        files = [uri];
+        files = [imageUri(vscode.Uri.parse(drop.uri, true))];
       } else files = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { '画像 (PNG / JPEG)': ['png', 'jpg', 'jpeg'] }, title: 'FMに送る画像を選択' });
       if (!current() || !files?.[0]) return;
       const stat = await vscode.workspace.fs.stat(files[0]);
@@ -209,6 +208,16 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     } catch {
       if (current()) { this.status = drop ? '画像は1枚ずつ、10 MB以下のPNGまたはJPEGをドロップしてください。' : '画像を読み込めません。10 MB以下のPNGまたはJPEGを選択してください。'; this.publish(); }
     }
+  }
+  // Explorer context menu: a reliable alternative to Shift-dropping, which VS Code only intermittently forwards to webviews.
+  async attachImageFile(uri?: vscode.Uri) {
+    await vscode.commands.executeCommand('localFM.chat.focus');
+    // Opening the view starts a model check; wait for it rather than rejecting.
+    if (!this.ready) await (this.busy ? this.checking : this.check());
+    if (this.busy) { void vscode.window.showInformationMessage('現在の生成が終わってから画像を添付してください。'); return; }
+    if (!this.ready) return;
+    if (!this.imagesSupported) { void vscode.window.showInformationMessage('画像入力にはmacOS 27以降と対応ビルドが必要です。'); return; }
+    await this.attachImage(undefined, uri);
   }
   async attachSelection() {
     const editor = vscode.window.activeTextEditor;
@@ -238,6 +247,13 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   }
   dispose() { ++this.imageSelection; this.image = undefined; this.messages = []; this.history = []; this.view = undefined; this.stop(); this.dropSpare(); this.edits.dispose(); }
 }
+// Only local files or remote files inside the workspace, never URLs or other schemes.
+function imageUri(uri: vscode.Uri) {
+  const local = uri.scheme === 'file' && (!uri.authority || uri.authority === 'localhost');
+  const remote = uri.scheme === 'vscode-remote' && !!vscode.workspace.getWorkspaceFolder(uri);
+  if ((!local && !remote) || uri.query || uri.fragment || !/\.(png|jpe?g)$/i.test(uri.path)) throw new Error('Unsupported URI');
+  return uri;
+}
 const count = (value: number) => value.toLocaleString('en-US');
 export function activate(context: vscode.ExtensionContext) {
   const provider = new ChatProvider(context);
@@ -245,5 +261,6 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerWebviewViewProvider('localFM.chat', provider),
     vscode.commands.registerCommand('localFM.open', () => vscode.commands.executeCommand('localFM.chat.focus')),
     ...Object.keys(selectionActions).map(action => vscode.commands.registerCommand(`localFM.selection.${action}`, () => provider.selectionAction(action as SelectionAction))),
-    vscode.commands.registerCommand('localFM.attachSelection', () => provider.attachSelection()));
+    vscode.commands.registerCommand('localFM.attachSelection', () => provider.attachSelection()),
+    vscode.commands.registerCommand('localFM.attachImageFile', (uri?: vscode.Uri) => provider.attachImageFile(uri)));
 }

@@ -2,7 +2,7 @@
   "name": "apple-fm-chatui",
   "displayName": "Local FM Chat",
   "description": "MacのApple Foundation Modelsと、VS Codeのサイドバーでローカルチャット。",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "local-fm",
   "license": "MIT",
   "repository": {
@@ -33,6 +33,10 @@
       {
         "command": "localFM.attachSelection",
         "title": "Local FM: 選択テキストをチャットに添付"
+      },
+      {
+        "command": "localFM.attachImageFile",
+        "title": "Local FM: 画像をチャットに添付"
       },
       {
         "command": "localFM.selection.summarize",
@@ -100,6 +104,13 @@
           "command": "localFM.selection.bullets",
           "when": "editorHasSelection && resourceScheme != local-fm-preview",
           "group": "localFM@4"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "localFM.attachImageFile",
+          "when": "!explorerResourceIsFolder && resourceExtname =~ /^\\.(png|jpe?g)$/i",
+          "group": "localFM@1"
         }
       ]
     }

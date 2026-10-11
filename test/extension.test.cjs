@@ -269,3 +269,23 @@ test('Finder bytes and Explorer URI drops attach without sending; invalid and st
   assert.equal(s.last().image.name, 'new.png');
   s.provider.dispose();
 });
+
+test('explorer context menu waits for the model check, then attaches the file without sending', async () => {
+  const s = setup();
+  const bytes = Buffer.from([255,216,255,224]);
+  let reads = 0; const infos = [];
+  s.vscode.window.showInformationMessage = message => { infos.push(message); };
+  s.vscode.workspace.fs = { stat: async () => ({ size: bytes.length }), readFile: async () => { reads++; return bytes; } };
+  const file = { scheme: 'file', authority: '', path: '/tmp/photo.JPG', query: '', fragment: '' };
+  // Focusing the view starts the check; the command must wait for it instead of failing.
+  const attached = s.commands.get('localFM.attachImageFile')(file); await tick();
+  s.jobs[0].onEvent({ type: 'ready', images: true }); s.jobs[0].resolve(); await attached;
+  assert.equal(s.last().image.name, 'photo.JPG'); assert.equal(s.last().image.mime, 'image/jpeg');
+  assert.equal(s.jobs.length, 1); assert.equal(reads, 1);
+  await s.commands.get('localFM.attachImageFile')({ ...file, scheme: 'https', authority: 'example.com' });
+  assert.equal(reads, 1); assert.equal(s.last().image.name, 'photo.JPG');
+  s.send({ type: 'refresh' }); s.jobs.at(-1).onEvent({ type: 'ready', images: false }); s.jobs.at(-1).resolve(); await tick();
+  await s.commands.get('localFM.attachImageFile')(file);
+  assert.equal(reads, 1); assert.match(infos.at(-1), /macOS 27/);
+  s.provider.dispose();
+});
