@@ -9,10 +9,11 @@
   function fit() { prompt.style.height = 'auto'; prompt.style.height = `${prompt.scrollHeight}px`; }
   function showDiagnostics(open) { $('diagnostics').hidden = !open; $('status-toggle').setAttribute('aria-expanded', String(open)); }
   function controls() {
-    $('send').disabled = state.busy || !state.ready || !prompt.value.trim();
+    $('send').disabled = state.busy || !state.ready || (!prompt.value.trim() && !state.image);
     $('stop').hidden = !state.busy;
     $('send').hidden = state.busy;
     $('refresh').disabled = state.busy;
+    $('attach-image').disabled = state.busy || !state.ready || !state.imagesSupported;
   }
   // Model output is always text, never trusted HTML. Fenced code gets a pre block;
   // with markdown on, a small subset is built as DOM nodes so nothing is parsed as HTML.
@@ -81,7 +82,9 @@
       copy.setAttribute('aria-label', `${index + 1}番目のメッセージをコピー`);
       copy.onclick = () => vscode.postMessage({ type: 'copy', index }); heading.append(copy);
     }
-    node.append(heading); content(node, message.text || (state.busy ? '考えています…' : '応答はありません。'), message.role === 'assistant' && !!message.text);
+    node.append(heading);
+    if (message.image) { const image = document.createElement('img'); image.className = 'message-image'; image.src = `data:${message.image.mime};base64,${message.image.data}`; image.alt = message.image.name; node.append(image); }
+    content(node, message.text || (state.busy ? '考えています…' : '応答はありません。'), message.role === 'assistant' && !!message.text);
     if (message.edit) {
       const edit = message.edit;
       const actions = document.createElement('div'); actions.className = 'edit-actions';
@@ -142,11 +145,15 @@
     $('attachment').hidden = !data.attachment;
     $('attachment').querySelector('span').textContent = `選択テキスト · ${data.attachment.length.toLocaleString()}文字`;
     $('attachment').title = data.attachment;
+    $('image-attachment').hidden = !data.image;
+    if (data.image) { $('image-preview').src = `data:${data.image.mime};base64,${data.image.data}`; $('image-name').textContent = data.image.name; }
+    else { $('image-preview').removeAttribute('src'); $('image-name').textContent = ''; }
+    $('image-support').textContent = data.imagesSupported ? '画像: PNG / JPEG · 1枚10 MBまで' : '画像入力にはmacOS 27以降と対応ビルドが必要です';
     controls();
   });
   $('composer').onsubmit = event => {
     event.preventDefault();
-    if (!state.busy && state.ready && prompt.value.trim()) vscode.postMessage({ type: 'send', text: prompt.value });
+    if (!state.busy && state.ready && (prompt.value.trim() || state.image)) vscode.postMessage({ type: 'send', text: prompt.value });
   };
   prompt.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
@@ -155,7 +162,7 @@
   });
   prompt.addEventListener('input', () => { vscode.setState({ draft: prompt.value }); fit(); controls(); });
   $('status-toggle').onclick = () => showDiagnostics($('diagnostics').hidden);
-  for (const [id, type] of [['reset', 'reset'], ['refresh', 'refresh'], ['stop', 'stop'], ['attach', 'attach'], ['remove', 'removeAttachment'], ['copy-diagnostics', 'copyDiagnostics']]) $(id).onclick = () => send(type);
+  for (const [id, type] of [['attach-image', 'attachImage'], ['remove-image', 'removeImage'], ['reset', 'reset'], ['refresh', 'refresh'], ['stop', 'stop'], ['attach', 'attach'], ['remove', 'removeAttachment'], ['copy-diagnostics', 'copyDiagnostics']]) $(id).onclick = () => send(type);
   document.querySelectorAll('[data-prompt]').forEach(button => button.onclick = () => {
     prompt.value = button.dataset.prompt; prompt.dispatchEvent(new Event('input')); prompt.focus();
   });

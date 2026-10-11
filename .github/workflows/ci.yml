@@ -26,6 +26,7 @@ jobs:
     runs-on: macos-26
     outputs:
       version: ${{ steps.version.outputs.version }}
+      images: ${{ steps.sdk.outputs.images }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -37,6 +38,16 @@ jobs:
       # ランナーの Command Line Tools は SDK が古い場合があるため、Foundation Models を含む Xcode を使う
       - run: echo "DEVELOPER_DIR=$(xcode-select -p)" >> "$GITHUB_ENV"
       - run: npm ci
+      - id: sdk
+        shell: bash
+        run: |
+          major=$(xcrun --show-sdk-version | cut -d. -f1)
+          if [ "$major" -ge 27 ]; then
+            echo "images=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "images=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SDK 26 build verifies text compatibility only; image-enabled release must be built with SDK 27+."
+          fi
       - run: npm run build:native
       - run: npx vsce package --target darwin-arm64 --out apple-fm-chatui-darwin-arm64-${{ steps.version.outputs.version }}.vsix
       - uses: actions/upload-artifact@v7
@@ -47,7 +58,7 @@ jobs:
   # package.json のバージョンに対応する GitHub Release がまだ無ければ作成する（タグは自動で付く）
   release:
     needs: [test, build]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.build.outputs.images == 'true'
     # gh CLI だけで済むため軽量ランナーで実行
     runs-on: ubuntu-slim
     permissions:

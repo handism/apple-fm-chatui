@@ -30,7 +30,7 @@ function setup() {
         jobs.push(job); return job;
       };
       return {
-        checkStatus: () => job(undefined, () => {}),
+        checkStatus: (binary, timeout, onEvent) => job(undefined, onEvent || (() => {})),
         generate: (binary, request, onEvent, timeoutMs, spare) => { if (spare) spare.taken = true; return job(request, onEvent, spare); },
         prepare: () => { const spare = { taken: false, disposed: false, dispose() { if (!this.taken) this.disposed = true; } }; spares.push(spare); return spare; }
       };
@@ -202,5 +202,39 @@ test('long conversations keep the newest exchanges within the turn limit', async
   const history = s.jobs.at(-1).request.history;
   assert.equal(history.length, 98);
   assert.equal(history[0].text, 'm1');
+  s.provider.dispose();
+});
+
+
+test('image attachment is sent, retained for follow-up, and cleared by reset', async () => {
+  const s = setup();
+  s.send({ type: 'ready' }); s.jobs[0].onEvent({ type: 'ready', images: true }); s.jobs[0].resolve(); await tick();
+  s.vscode.window.showOpenDialog = async () => [{ path: '/private/example.png' }];
+  s.vscode.workspace.fs = { stat: async () => ({ size: 8 }), readFile: async () => Buffer.from([137,80,78,71,13,10,26,10]) };
+  s.send({ type: 'attachImage' }); await tick(); await tick();
+  assert.equal(s.last().image.name, 'example.png');
+  s.send({ type: 'send', text: '' });
+  const job = s.jobs.at(-1);
+  assert.equal(job.request.image.mime, 'image/png');
+  assert.match(job.request.prompt, /画像/);
+  assert.equal(s.last().image, undefined);
+  job.onEvent({ type: 'snapshot', text: '赤い画像' }); job.resolve(); await tick();
+  s.send({ type: 'send', text: '色は？' });
+  assert.equal(s.jobs.at(-1).request.history[0].image.data, job.request.image.data);
+  s.send({ type: 'reset' });
+  assert.deepEqual(s.last().messages, []);
+  s.provider.dispose();
+});
+
+test('image picker result after reset is ignored; unsupported helper cannot select images', async () => {
+  const s = setup();
+  s.send({ type: 'ready' }); s.jobs[0].resolve(); await tick();
+  let selected = 0, resolvePicker;
+  s.vscode.window.showOpenDialog = () => { selected++; return new Promise(resolve => { resolvePicker = resolve; }); };
+  s.send({ type: 'attachImage' }); assert.equal(selected, 0);
+  s.send({ type: 'refresh' }); s.jobs.at(-1).onEvent({ type: 'ready', images: true }); s.jobs.at(-1).resolve(); await tick();
+  s.send({ type: 'attachImage' }); assert.equal(selected, 1);
+  s.send({ type: 'reset' }); resolvePicker([{ path: '/private/late.png' }]); await tick();
+  assert.equal(s.last().image, undefined);
   s.provider.dispose();
 });

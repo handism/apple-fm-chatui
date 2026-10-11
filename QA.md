@@ -50,3 +50,14 @@
 - 実モデルの定型アクション出力品質、実VS Codeの表示と差分操作は、開発側では未確認。0.1.0の通常チャットの実モデル動作は利用者報告による確認。
 
 - 0.2.0の`npm run test:host`もVS Code起動時のSIGABRTでブロック。追加した実APIの差分・置換・Undoテストは開始できず、自動テスト20件はモックによる動作検証です。
+
+## 2026-10-11 画像入力
+
+- SDK 27.0 / macOS 27.0.1で画像対応Swiftヘルパーをビルド。`--status`は`images: true`。
+- `npm run check`、`npm test`（32件）、`npm run build:native`、`npm run package`、`git diff --check`成功。
+- サンドボックス外の実モデル検証: 合成した64×64の赤色PNGを入力し「赤」を受信。画像付きTranscriptを履歴にした追加質問でも「赤」を受信。サンドボックス内の初回推論はgenerationFailedだったため成功扱いにしていない。
+- Chromeで実際のHTML/CSS/JSを使用した320×720の単体プレビュー: 画像表示、画像だけの送信イベント、横はみ出しなしを確認。`.test-results/image-preview.png`。VS Codeテーマ・ファイル選択ダイアログを含む画像送信の通し操作ではない。
+- `npm run test:host`成功。既存のUndo後テストが古いTextEditorを参照していたため、再表示で返されたTextEditorを使うよう修正し、再実行で成功を確認。
+- 追加した自動テスト: MIME判定・サイズ制限、画像送信と履歴継承、非対応ヘルパーのボタン操作拒否、リセット後の遅延ファイル選択結果の無効化。
+- macOS 26実機・SDK 26でのビルド、JPEGの実推論、EXIF回転、大画像での推論品質は未検証。SDK 26では画像APIを条件コンパイルで除外する。
+- ローカル配布物: `apple-fm-chatui-darwin-arm64-0.3.0.vsix`。公開・インストールは実施していない。

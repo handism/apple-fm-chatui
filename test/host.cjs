@@ -16,7 +16,7 @@ exports.run = async () => {
   // This verifies editing behavior, not generation quality or real-model output.
   const { SelectionEdits } = require('../dist/selection');
   const source = await vscode.workspace.openTextDocument({ content: '前文\n元の文章\n後文', language: 'plaintext' });
-  const sourceEditor = await vscode.window.showTextDocument(source, { preview: false });
+  let sourceEditor = await vscode.window.showTextDocument(source, { preview: false });
   sourceEditor.selection = new vscode.Selection(1, 0, 1, 4);
   const edits = new SelectionEdits(() => {});
   try {
@@ -28,6 +28,7 @@ exports.run = async () => {
     assert.equal(edits.summary(edit.id).state, 'applied');
     await vscode.commands.executeCommand('undo');
     assert.equal(source.getText(), '前文\n元の文章\n後文');
+    sourceEditor = await vscode.window.showTextDocument(source, { preview: false });
     sourceEditor.selection = new vscode.Selection(1, 0, 1, 4);
     const stale = edits.capture('rewrite'); assert.ok(stale);
     edits.complete(stale, '上書きしてはいけない文章'); await edits.preview(stale.id);

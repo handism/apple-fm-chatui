@@ -2,9 +2,10 @@ import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { DiagnosticError, isFailureCode, FailureCode } from './diagnostics';
 
-export type Turn = { role: 'user' | 'assistant'; text: string };
-export type Request = { prompt: string; history: Turn[] };
-export type Event = { type: 'ready' | 'done' } | { type: 'snapshot'; text: string } | { type: 'error'; message: string; code?: FailureCode; nativeDomain?: string; nativeCode?: number };
+export type ChatImage = { name: string; data: string; mime: 'image/png' | 'image/jpeg' };
+export type Turn = { role: 'user' | 'assistant'; text: string; image?: ChatImage };
+export type Request = { prompt: string; history: Turn[]; image?: ChatImage };
+export type Event = { type: 'ready' | 'done'; images?: boolean } | { type: 'snapshot'; text: string } | { type: 'error'; message: string; code?: FailureCode; nativeDomain?: string; nativeCode?: number };
 export type Job = { done: Promise<void>; cancel: () => void };
 /** A generation helper started ahead of the request, so it can load the model while idle. */
 export type Spare = { take: () => ChildProcessWithoutNullStreams | undefined; dispose: () => void };
@@ -20,8 +21,8 @@ export function parseEvent(line: string): Event {
 }
 
 /** Asks the helper whether the model is available. Resolves only on `ready`. */
-export function checkStatus(binary: string, timeoutMs = 15_000): Job {
-  return run(start(binary, ['--status']), undefined, { allowed: ['ready'], terminal: 'ready' }, () => {}, timeoutMs);
+export function checkStatus(binary: string, timeoutMs = 15_000, onEvent: (event: Event) => void = () => {}): Job {
+  return run(start(binary, ['--status']), undefined, { allowed: ['ready'], terminal: 'ready' }, onEvent, timeoutMs);
 }
 
 /** Streams a response. Resolves only after `done`; snapshots carry the full text so far. Uses `spare` when it is still running. */

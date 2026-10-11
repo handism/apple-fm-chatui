@@ -17,6 +17,14 @@ Macの **Apple Foundation Models** と、VS Codeのサイドバーで会話す�
 
 回答は順次表示され、コピーできます。「停止」で生成を中断し、「新しい会話」で会話を消去できます。エディタの選択部分は右クリックの `Local FM: 選択テキストをチャットに添付` で添付し、質問と一緒に送信できます。ファイルを自動で読み取る機能はありません。
 
+## 画像について質問する
+
+macOS 27以降では「＋ 画像」からPNGまたはJPEGを1枚選択できます。プレビューを確認して質問と一緒に送信してください。画像だけを送信すると内容の説明を求めます。「×」で送信前に解除できます。
+
+画像は1枚10 MB以下、4000万画素以下、各辺16384ピクセル以下です。画像付きの完了した会話も次の質問に引き継ぎます。1リクエストに含める画像は履歴を含め最大3枚で、超えた場合は古いやり取りから外し、その旨を回答の下に表示します。モデルの文脈上限によって、それより早く履歴を省く場合もあります。
+
+画像はメモリ内で保持し、標準入力経由でオンデバイスモデルへ渡します。拡張が画像のコピーをディスクへ保存することはありません。「新しい会話」で画像を含む履歴を消せます。macOS 26やSDK 26で作成したビルドでは画像ボタンを無効にし、テキスト会話を利用できます。
+
 ## 選択テキストの定型アクションと差分適用
 
 1. エディタで文章を1か所選択します。
@@ -52,7 +60,7 @@ Macの **Apple Foundation Models** と、VS Codeのサイドバーで会話す�
 
 ## 開発
 
-Node.js 22以降とmacOS 26以降のSDKを含むCommand Line ToolsまたはXcodeが必要です。配布VSIXにはSwiftバイナリを同梱するため、利用者側のコンパイルは不要です。
+Node.js 22以降とmacOS 26以降のSDKを含むCommand Line ToolsまたはXcodeが必要です。画像入力を含めるにはmacOS 27以降のSDKが必要です。SDK 26ではテキスト専用ビルドになります。配布VSIXにはSwiftバイナリを同梱するため、利用者側のコンパイルは不要です。
 
 ```sh
 npm install
@@ -73,7 +81,7 @@ printf '%s' '{"prompt":"こんにちは。短く自己紹介してください�
 ### リリース手順
 
 1. `package.json` の `version` を上げてコミットし、mainへpushします（タグ作成は不要）。
-2. CI（macOS 26 / Apple Silicon）のテストとビルドが通ると、`v<version>` のGitHub Releaseが未作成の場合に限り、タグ付きでReleaseを作成して `apple-fm-chatui-darwin-arm64-<version>.vsix` を添付します。リリースノートは自動生成です。
+2. CI（macOS 26 / Apple Silicon）のテストとビルドが通り、SDK 27以降で画像入力を含めてビルドできた場合、`v<version>` のGitHub Releaseが未作成の場合に限り、タグ付きでReleaseを作成して `apple-fm-chatui-darwin-arm64-<version>.vsix` を添付します。リリースノートは自動生成です。
 
 ## 参照
 
@@ -82,3 +90,5 @@ printf '%s' '{"prompt":"こんにちは。短く自己紹介してください�
 - [VS Code: Webview API](https://code.visualstudio.com/api/extension-guides/webview)
 
 MIT License
+
+SDK 26のCIビルドはテキスト互換性の確認用で、自動リリースしません。その場合はSDK 27以降で検証した画像対応VSIXをリリースに添付します。

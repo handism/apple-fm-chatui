@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}}; script-src 'nonce-{{nonce}}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src {{cspSource}}; script-src 'nonce-{{nonce}}';">
   <link rel="stylesheet" href="{{chatCss}}">
 </head>
 <body>
@@ -35,11 +35,14 @@
   </main>
   <footer>
     <div id="attachment" hidden><span></span><button id="remove" class="quiet" aria-label="添付を解除">×</button></div>
+    <div id="image-attachment" hidden><img id="image-preview" alt="送信する画像"><span id="image-name"></span><button id="remove-image" class="quiet" aria-label="画像を解除">×</button></div>
+    <p id="image-support" class="footnote"></p>
     <form id="composer">
       <label for="prompt" class="sr-only">メッセージ</label>
       <textarea id="prompt" rows="2" maxlength="{{promptLimit}}" placeholder="メッセージを入力（Shift+Enterで改行）"></textarea>
       <div class="compose-actions">
         <button id="attach" type="button" class="quiet" title="エディタで選択したテキストを添付">＋ 選択テキスト</button>
+        <button id="attach-image" type="button" class="quiet">＋ 画像</button>
         <button id="stop" type="button" hidden>停止</button>
         <button id="send" type="submit">送信 ↑</button>
       </div>

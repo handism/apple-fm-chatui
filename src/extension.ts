@@ -1,8 +1,10 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
+import { imageFromBytes, imageLimit } from './images';
 import { release } from 'node:os';
-import { checkStatus, generate, prepare, Job, Spare, Turn } from './bridge';
+import { checkStatus, generate, prepare, Job, Spare, Turn, ChatImage } from './bridge';
 import { DiagnosticError, diagnosticFailure, isFatal, recovery } from './diagnostics';
 import { limits } from './limits';
 import { SelectionEdits, SelectionEdit, SelectionAction, selectionActions } from './selection';
@@ -25,6 +27,9 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private failurePhase?: 'availability' | 'generation';
   private status = 'モデルを確認しています…';
   private attachment = '';
+  private image?: ChatImage;
+  private imagesSupported = false;
+  private imageSelection = 0;
   private edits: SelectionEdits;
   private activeEdit?: SelectionEdit;
   constructor(private readonly context: vscode.ExtensionContext) { this.edits = new SelectionEdits(() => this.publish()); }
@@ -45,7 +50,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
         case 'send': if (typeof data.text === 'string') void this.send(data.text); break;
         case 'stop': this.stop(); break;
         case 'reset':
-          this.stop(); this.edits.clear(); this.messages = []; this.history = []; this.attachment = '';
+          this.stop(); this.edits.clear(); this.messages = []; this.history = []; this.attachment = ''; this.image = undefined; ++this.imageSelection;
           this.failure = undefined;
           if (this.ready) { this.status = this.availableStatus(); this.publish(); }
           else void this.check();
@@ -55,6 +60,8 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
         case 'previewEdit': if (typeof data.id === 'string') void this.edits.preview(data.id); break;
         case 'applyEdit': if (typeof data.id === 'string') void this.edits.apply(data.id); break;
         case 'discardEdit': if (typeof data.id === 'string') this.edits.discard(data.id); break;
+        case 'attachImage': void this.attachImage(); break;
+        case 'removeImage': this.image = undefined; ++this.imageSelection; this.publish(); break;
         case 'attach': void this.attachSelection(); break;
         case 'removeAttachment': this.attachment = ''; this.publish(); break;
         case 'copy': if (typeof data.index === 'number' && Number.isInteger(data.index) && this.messages[data.index]) void vscode.env.clipboard.writeText(this.messages[data.index].text); break;
@@ -65,7 +72,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private publish() {
     // A full state supersedes any pending streamed text.
     clearTimeout(this.snapshotTimer); this.snapshotTimer = undefined;
-    void this.view?.webview.postMessage({ type: 'state', messages: this.messages.map(message => ({ ...message, edit: message.editId ? this.edits.summary(message.editId) : undefined })), busy: this.busy, ready: this.ready, status: this.status, attachment: this.attachment,
+    void this.view?.webview.postMessage({ type: 'state', messages: this.messages.map(message => ({ ...message, edit: message.editId ? this.edits.summary(message.editId) : undefined })), busy: this.busy, ready: this.ready, status: this.status, attachment: this.attachment, image: this.image, imagesSupported: this.imagesSupported,
       diagnostics: { availability: this.availability, lastResponseAt: this.lastResponseAt, lastCheckedAt: this.lastCheckedAt,
         code: this.failure?.code, guidance: this.failure ? recovery(this.failure.code) : undefined } });
   }
@@ -106,22 +113,25 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
       this.fail(new DiagnosticError('macOS 26以降が必要です。', 'unsupportedOS'), 'availability'); this.publish(); return;
     }
     // Not ready first, so stopping a generation does not start a spare that is dropped right away.
-    this.ready = false; this.stop(); this.dropSpare();
+    this.ready = false; this.imagesSupported = false; this.stop(); this.dropSpare();
     const id = ++this.generation;
     this.busy = true; this.failure = undefined; this.status = 'モデルを確認しています…'; this.publish();
-    const job = checkStatus(this.binary());
+    const job = checkStatus(this.binary(), undefined, event => { if (id === this.generation && event.type === 'ready') this.imagesSupported = event.images === true; });
     this.active = job;
     try { await job.done; if (id === this.generation) { this.ready = true; this.availability = 'available'; this.lastCheckedAt = new Date().toISOString(); this.status = this.availableStatus(); } }
     catch (error) { if (id === this.generation) { this.lastCheckedAt = new Date().toISOString(); this.fail(error, 'availability'); } }
     finally { if (id === this.generation) { this.active = undefined; this.busy = false; this.warmSpare(); this.publish(); } }
   }
   private async send(text: string, edit?: SelectionEdit) {
-    if (this.busy || !this.ready || !text.trim()) return;
+    if (this.busy || !this.ready || (!text.trim() && (edit || !this.image))) return;
+    const image = edit ? undefined : this.image;
+    if (image && !this.imagesSupported) { this.status = '画像入力にはmacOS 27以降と対応ビルドが必要です。'; this.publish(); return; }
+    if (!text.trim()) text = 'この画像の内容を説明してください。';
     const prompt = !edit && this.attachment ? `${text.trim()}\n\n添付テキスト:\n${this.attachment}` : text.trim();
     if (prompt.length > limits.prompt) { this.status = `入力と添付の合計を${count(limits.prompt)}文字以内にしてください。`; this.publish(); return; }
     const id = ++this.generation;
-    this.busy = true; this.failure = undefined; if (!edit) this.attachment = ''; this.activeEdit = edit; this.status = 'このMacで生成中…';
-    this.messages.push({ role: 'user', text: edit ? `${selectionActions[edit.action].label}\n\n${edit.selected}` : prompt });
+    this.busy = true; this.failure = undefined; if (!edit) { this.attachment = ''; this.image = undefined; ++this.imageSelection; } this.activeEdit = edit; this.status = 'このMacで生成中…';
+    this.messages.push({ role: 'user', text: edit ? `${selectionActions[edit.action].label}\n\n${edit.selected}` : prompt, ...(image ? { image } : {}) });
     const answer: Message = { role: 'assistant', text: '', incomplete: true, ...(edit ? { editId: edit.id } : {}) };
     this.messages.push(answer); this.publish();
     const index = this.messages.length - 1;
@@ -131,9 +141,10 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     const trim = (turns: number) => { history = history.slice(turns); dropped += turns / 2; };
     // Each exchange adds two turns; keep the newest ones within the helper's limit.
     if (history.length + 2 > limits.historyTurns) trim(history.length + 2 - limits.historyTurns);
+    while (history.filter(turn => turn.image).length + (image ? 1 : 0) > 3) trim(2);
     try {
       for (;;) {
-        const job = generate(this.binary(), { prompt, history }, event => {
+        const job = generate(this.binary(), { prompt, history, ...(image ? { image } : {}) }, event => {
           if (id === this.generation && event.type === 'snapshot') { answer.text = event.text; this.publishSnapshot(index); }
         }, undefined, this.spare);
         this.spare = undefined; this.active = job;
@@ -150,7 +161,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
       if (!answer.text.trim()) throw new DiagnosticError('モデルから回答本文を受信できませんでした。', 'generationFailed');
       answer.incomplete = false;
       if (edit) this.edits.complete(edit, answer.text);
-      else this.history = [...history, { role: 'user', text: prompt }, { role: 'assistant', text: answer.text }];
+      else this.history = [...history, { role: 'user', text: prompt, ...(image ? { image } : {}) }, { role: 'assistant', text: answer.text }];
       if (dropped) answer.note = `古いやり取り${dropped}件は文脈から外して回答しました。`;
       this.lastResponseAt = new Date().toISOString();
       this.status = this.availableStatus();
@@ -163,6 +174,25 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     this.activeEdit = undefined;
     if (this.active) { this.active.cancel(); this.status = '停止しました。未完了のやり取りは次の会話に含みません。'; }
     this.active = undefined; this.busy = false; this.warmSpare(); this.publish();
+  }
+  private async attachImage() {
+    if (this.busy || !this.ready || !this.imagesSupported) return;
+    const selection = ++this.imageSelection;
+    const generation = this.generation;
+    const current = () => selection === this.imageSelection && generation === this.generation && !this.busy && !!this.view;
+    try {
+      const files = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { '画像 (PNG / JPEG)': ['png', 'jpg', 'jpeg'] }, title: 'FMに送る画像を選択' });
+      if (!current() || !files?.[0]) return;
+      const stat = await vscode.workspace.fs.stat(files[0]);
+      if (!current()) return;
+      if (stat.size > imageLimit) throw new Error('size');
+      const bytes = await vscode.workspace.fs.readFile(files[0]);
+      if (!current()) return;
+      this.image = imageFromBytes(basename(files[0].path), bytes);
+      this.publish();
+    } catch {
+      if (current()) { this.status = '画像を読み込めません。10 MB以下のPNGまたはJPEGを選択してください。'; this.publish(); }
+    }
   }
   async attachSelection() {
     const editor = vscode.window.activeTextEditor;
@@ -190,7 +220,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
       await this.send(this.edits.prompt(edit), edit);
     } catch { this.edits.abandon(edit); this.publish(); void vscode.window.showWarningMessage('選択テキストの処理を開始できませんでした。'); }
   }
-  dispose() { this.view = undefined; this.stop(); this.dropSpare(); this.edits.dispose(); }
+  dispose() { ++this.imageSelection; this.image = undefined; this.messages = []; this.history = []; this.view = undefined; this.stop(); this.dropSpare(); this.edits.dispose(); }
 }
 const count = (value: number) => value.toLocaleString('en-US');
 export function activate(context: vscode.ExtensionContext) {

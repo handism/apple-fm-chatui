@@ -62,3 +62,9 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground); }
 [hidden] { display: none !important; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 @media (max-height: 550px) { #welcome { padding: 12px 0; } }
+
+.compose-actions { flex-wrap: wrap; }
+#image-attachment { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+#image-preview { width: 48px; height: 48px; object-fit: contain; }
+#image-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 11px; }
+.message-image { display: block; max-width: 100%; max-height: 240px; object-fit: contain; margin-bottom: 8px; }
