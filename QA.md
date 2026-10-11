@@ -61,3 +61,10 @@
 - 追加した自動テスト: MIME判定・サイズ制限、画像送信と履歴継承、非対応ヘルパーのボタン操作拒否、リセット後の遅延ファイル選択結果の無効化。
 - macOS 26実機・SDK 26でのビルド、JPEGの実推論、EXIF回転、大画像での推論品質は未検証。SDK 26では画像APIを条件コンパイルで除外する。
 - ローカル配布物: `apple-fm-chatui-darwin-arm64-0.3.0.vsix`。公開・インストールは実施していない。
+
+## 2026-10-11 画像のドラッグ＆ドロップ
+
+- Finderからのドロップ（Webview内でFileを読み取りbase64で送信）と、VS Codeファイル一覧からのShift＋ドロップ（URIを拡張側で読み取り）に対応。ドロップだけでは送信しない。
+- 拡張側でバイト列からPNG/JPEGを判定し、申告MIMEは無視。URIは`file`（ローカル）とワークスペース内の`vscode-remote`のみ許可し、クエリ・フラグメント・PNG/JPEG以外の拡張子を拒否。リセット・削除・別の選択の後に届いた古いドロップはトークンで破棄する。
+- `npm run check`、`node --check media/chat.js`、`git diff --check`、`npm test`（34件）、SDK 27.0での`npm run package`成功。新しいヘルパーの`--status`は`images: true`。
+- 実VS CodeでのFinder／ファイル一覧からのドロップ操作は開発側では未確認。

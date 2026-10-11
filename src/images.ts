@@ -10,3 +10,12 @@ export function imageFromBytes(name: string, bytes: Uint8Array): ChatImage {
   if (!png && !jpeg) throw new Error('Unsupported image');
   return { name, data: data.toString('base64'), mime: png ? 'image/png' : 'image/jpeg' };
 }
+
+export function imageFromDrop(value: unknown): ChatImage {
+  if (!value || typeof value !== 'object') throw new Error('Invalid drop');
+  const { name, data } = value as Record<string, unknown>;
+  if (typeof name !== 'string' || !name || name.length > 255 || /[\/\\\x00-\x1f]/.test(name) ||
+      typeof data !== 'string' || data.length > Math.ceil(imageLimit / 3) * 4 ||
+      data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error('Invalid drop');
+  return imageFromBytes(name, Buffer.from(data, 'base64'));
+}

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
-import { imageFromBytes, imageLimit } from './images';
+import { imageFromBytes, imageFromDrop, imageLimit } from './images';
 import { release } from 'node:os';
 import { checkStatus, generate, prepare, Job, Spare, Turn, ChatImage } from './bridge';
 import { DiagnosticError, diagnosticFailure, isFatal, recovery } from './diagnostics';
@@ -60,6 +60,8 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
         case 'previewEdit': if (typeof data.id === 'string') void this.edits.preview(data.id); break;
         case 'applyEdit': if (typeof data.id === 'string') void this.edits.apply(data.id); break;
         case 'discardEdit': if (typeof data.id === 'string') this.edits.discard(data.id); break;
+        case 'dropImage': if (data.token === this.imageToken()) void this.attachImage(data); break;
+        case 'dropImageError': if (data.token === this.imageToken() && !this.busy) { this.status = '画像は1枚ずつ、10 MB以下のPNGまたはJPEGをドロップしてください。'; this.publish(); } break;
         case 'attachImage': void this.attachImage(); break;
         case 'removeImage': this.image = undefined; ++this.imageSelection; this.publish(); break;
         case 'attach': void this.attachSelection(); break;
@@ -72,7 +74,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private publish() {
     // A full state supersedes any pending streamed text.
     clearTimeout(this.snapshotTimer); this.snapshotTimer = undefined;
-    void this.view?.webview.postMessage({ type: 'state', messages: this.messages.map(message => ({ ...message, edit: message.editId ? this.edits.summary(message.editId) : undefined })), busy: this.busy, ready: this.ready, status: this.status, attachment: this.attachment, image: this.image, imagesSupported: this.imagesSupported,
+    void this.view?.webview.postMessage({ type: 'state', messages: this.messages.map(message => ({ ...message, edit: message.editId ? this.edits.summary(message.editId) : undefined })), busy: this.busy, ready: this.ready, status: this.status, attachment: this.attachment, image: this.image, imagesSupported: this.imagesSupported, imageToken: this.imageToken(),
       diagnostics: { availability: this.availability, lastResponseAt: this.lastResponseAt, lastCheckedAt: this.lastCheckedAt,
         code: this.failure?.code, guidance: this.failure ? recovery(this.failure.code) : undefined } });
   }
@@ -175,13 +177,27 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     if (this.active) { this.active.cancel(); this.status = '停止しました。未完了のやり取りは次の会話に含みません。'; }
     this.active = undefined; this.busy = false; this.warmSpare(); this.publish();
   }
-  private async attachImage() {
+  private imageToken() { return `${this.generation}:${this.imageSelection}`; }
+  private async attachImage(drop?: Record<string, unknown>) {
     if (this.busy || !this.ready || !this.imagesSupported) return;
     const selection = ++this.imageSelection;
     const generation = this.generation;
     const current = () => selection === this.imageSelection && generation === this.generation && !this.busy && !!this.view;
+    this.publish();
     try {
-      const files = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { '画像 (PNG / JPEG)': ['png', 'jpg', 'jpeg'] }, title: 'FMに送る画像を選択' });
+      if (drop?.image !== undefined) {
+        this.image = imageFromDrop(drop.image);
+        this.publish(); return;
+      }
+      let files: readonly vscode.Uri[] | undefined;
+      if (drop) {
+        if (typeof drop.uri !== 'string' || drop.uri.length > 8192) throw new Error('Invalid URI');
+        const uri = vscode.Uri.parse(drop.uri, true);
+        const local = uri.scheme === 'file' && (!uri.authority || uri.authority === 'localhost');
+        const remote = uri.scheme === 'vscode-remote' && !!vscode.workspace.getWorkspaceFolder(uri);
+        if ((!local && !remote) || uri.query || uri.fragment || !/\.(png|jpe?g)$/i.test(uri.path)) throw new Error('Unsupported URI');
+        files = [uri];
+      } else files = await vscode.window.showOpenDialog({ canSelectMany: false, filters: { '画像 (PNG / JPEG)': ['png', 'jpg', 'jpeg'] }, title: 'FMに送る画像を選択' });
       if (!current() || !files?.[0]) return;
       const stat = await vscode.workspace.fs.stat(files[0]);
       if (!current()) return;
@@ -191,7 +207,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
       this.image = imageFromBytes(basename(files[0].path), bytes);
       this.publish();
     } catch {
-      if (current()) { this.status = '画像を読み込めません。10 MB以下のPNGまたはJPEGを選択してください。'; this.publish(); }
+      if (current()) { this.status = drop ? '画像は1枚ずつ、10 MB以下のPNGまたはJPEGをドロップしてください。' : '画像を読み込めません。10 MB以下のPNGまたはJPEGを選択してください。'; this.publish(); }
     }
   }
   async attachSelection() {

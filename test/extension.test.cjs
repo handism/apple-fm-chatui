@@ -15,7 +15,7 @@ function setup() {
     workspace: { registerTextDocumentContentProvider: () => ({ dispose() {} }), onDidChangeTextDocument: () => ({ dispose() {} }), onDidCloseTextDocument: () => ({ dispose() {} }) },
     Range: class { constructor(start, end) { this.start = start; this.end = end; } }, EndOfLine: { CRLF: 2, LF: 1 },
     version: "1.105.0", env: { clipboard: { writeText: async text => { clipboard.text = text; } } },
-    Uri: { joinPath: (base, ...parts) => ({ fsPath: path.join(base.fsPath, ...parts), toString: () => parts.join('/') }) },
+    Uri: { parse: value => { const u = new URL(value); return { scheme: u.protocol.slice(0, -1), authority: u.host, path: decodeURIComponent(u.pathname), query: u.search, fragment: u.hash }; }, joinPath: (base, ...parts) => ({ fsPath: path.join(base.fsPath, ...parts), toString: () => parts.join('/') }) },
     window: { registerWebviewViewProvider: (_, p) => { provider = p; return { dispose() {} }; } },
     commands: { registerCommand: (name, fn) => { commands.set(name, fn); return { dispose() {} }; }, executeCommand: async name => { if (name === 'localFM.chat.focus') listener({ type: 'ready' }); } }
   };
@@ -236,5 +236,36 @@ test('image picker result after reset is ignored; unsupported helper cannot sele
   s.send({ type: 'attachImage' }); assert.equal(selected, 1);
   s.send({ type: 'reset' }); resolvePicker([{ path: '/private/late.png' }]); await tick();
   assert.equal(s.last().image, undefined);
+  s.provider.dispose();
+});
+
+
+test('Finder bytes and Explorer URI drops attach without sending; invalid and stale drops preserve attachment', async () => {
+  const s = setup();
+  s.send({ type: 'ready' }); s.jobs[0].onEvent({ type: 'ready', images: true }); s.jobs[0].resolve(); await tick();
+  const bytes = Buffer.from([137,80,78,71,13,10,26,10]);
+  const drop = image => s.send({ type: 'dropImage', token: s.last().imageToken, image });
+  drop({ name: 'finder.png', data: bytes.toString('base64') });
+  assert.equal(s.last().image.name, 'finder.png'); assert.equal(s.jobs.length, 1);
+  let reads = 0;
+  s.vscode.workspace.fs = { stat: async () => ({ size: bytes.length }), readFile: async () => { reads++; return bytes; } };
+  s.send({ type: 'dropImage', token: s.last().imageToken, uri: 'file:///tmp/Explorer%20image.png' }); await tick();
+  assert.equal(s.last().image.name, 'Explorer image.png'); assert.equal(reads, 1);
+  for (const uri of ['https://example.com/a.png', 'file://server/a.png', 'file:///tmp/secret.txt', 'command:workbench.action.closeWindow', 'file:///tmp/a.png?x=1']) {
+    s.send({ type: 'dropImage', token: s.last().imageToken, uri }); await tick();
+    assert.equal(reads, 1); assert.equal(s.last().image.name, 'Explorer image.png');
+  }
+  drop({ name: 'fake.png', data: Buffer.from('<svg/>').toString('base64') });
+  assert.equal(s.last().image.name, 'Explorer image.png');
+  const staleToken = s.last().imageToken;
+  s.send({ type: 'reset' });
+  s.send({ type: 'dropImage', token: staleToken, image: { name: 'old.png', data: bytes.toString('base64') } });
+  assert.equal(s.last().image, undefined);
+  let finish;
+  s.vscode.workspace.fs.readFile = () => new Promise(resolve => { finish = resolve; });
+  s.send({ type: 'dropImage', token: s.last().imageToken, uri: 'file:///tmp/slow.png' }); await tick();
+  drop({ name: 'new.png', data: bytes.toString('base64') });
+  finish(bytes); await tick();
+  assert.equal(s.last().image.name, 'new.png');
   s.provider.dispose();
 });

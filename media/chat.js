@@ -4,7 +4,8 @@
   const prompt = $('prompt');
   let state = { busy: false, ready: false, messages: [] };
   prompt.value = vscode.getState()?.draft || '';
-  const send = type => vscode.postMessage({ type });
+  let dropRead = 0;
+  const send = type => { if (['reset', 'stop', 'attachImage', 'removeImage'].includes(type)) ++dropRead; vscode.postMessage({ type }); };
   // Grow with content up to the CSS max-height instead of showing a resize handle.
   function fit() { prompt.style.height = 'auto'; prompt.style.height = `${prompt.scrollHeight}px`; }
   function showDiagnostics(open) { $('diagnostics').hidden = !open; $('status-toggle').setAttribute('aria-expanded', String(open)); }
@@ -129,6 +130,7 @@
     }
     if (data.type !== 'state') return;
     state = data;
+    if (state.busy || !state.ready || !state.imagesSupported) $('drop-hint').hidden = true;
     $('status').textContent = data.status;
     $('dot').className = data.diagnostics?.code ? 'problem' : (data.ready ? 'online' : '');
     const diagnostic = data.diagnostics || {};
@@ -148,7 +150,7 @@
     $('image-attachment').hidden = !data.image;
     if (data.image) { $('image-preview').src = `data:${data.image.mime};base64,${data.image.data}`; $('image-name').textContent = data.image.name; }
     else { $('image-preview').removeAttribute('src'); $('image-name').textContent = ''; }
-    $('image-support').textContent = data.imagesSupported ? '画像: PNG / JPEG · 1枚10 MBまで' : '画像入力にはmacOS 27以降と対応ビルドが必要です';
+    $('image-support').textContent = data.imagesSupported ? 'PNG / JPEG・10 MBまで。ファイル一覧からはShift＋ドロップ' : '画像入力にはmacOS 27以降と対応ビルドが必要です';
     controls();
   });
   $('composer').onsubmit = event => {
@@ -165,6 +167,57 @@
   for (const [id, type] of [['attach-image', 'attachImage'], ['remove-image', 'removeImage'], ['reset', 'reset'], ['refresh', 'refresh'], ['stop', 'stop'], ['attach', 'attach'], ['remove', 'removeAttachment'], ['copy-diagnostics', 'copyDiagnostics']]) $(id).onclick = () => send(type);
   document.querySelectorAll('[data-prompt]').forEach(button => button.onclick = () => {
     prompt.value = button.dataset.prompt; prompt.dispatchEvent(new Event('input')); prompt.focus();
+  });
+  // Finder supplies File bytes; the VS Code Explorer supplies resource URIs.
+  // Never interpret ordinary dragged text as a filesystem path.
+  const dropTypes = ['Files', 'text/uri-list', 'resourceurls'];
+  const fileDrag = event => dropTypes.some(type => Array.from(event.dataTransfer?.types || []).some(t => t.toLowerCase() === type.toLowerCase()));
+  let dragDepth = 0;
+  const canDrop = () => state.ready && state.imagesSupported && !state.busy;
+  const clearDrag = () => { dragDepth = 0; $('drop-hint').hidden = true; };
+  document.addEventListener('dragenter', event => {
+    if (!fileDrag(event)) return;
+    event.preventDefault(); ++dragDepth;
+    $('drop-hint').textContent = canDrop() ? '画像をドロップして添付' : '画像を添付できません。生成中の場合は完了をお待ちください。';
+    $('drop-hint').hidden = false;
+  });
+  document.addEventListener('dragover', event => {
+    if (!fileDrag(event)) return;
+    event.preventDefault(); event.stopPropagation();
+    event.dataTransfer.dropEffect = canDrop() ? 'copy' : 'none';
+  });
+  document.addEventListener('dragleave', event => {
+    if (fileDrag(event) && --dragDepth <= 0) clearDrag();
+  });
+  document.addEventListener('dragend', clearDrag);
+  window.addEventListener('blur', clearDrag);
+  document.addEventListener('drop', async event => {
+    if (!fileDrag(event)) return;
+    event.preventDefault(); event.stopPropagation(); clearDrag();
+    if (!canDrop()) return;
+    const read = ++dropRead;
+    const token = state.imageToken;
+    const current = () => read === dropRead && token === state.imageToken && canDrop();
+    try {
+      const transfer = event.dataTransfer;
+      const files = Array.from(transfer.files);
+      if (files.length) {
+        if (files.length !== 1 || !files[0].size || files[0].size > 10 * 1024 * 1024 || !/\.(png|jpe?g)$/i.test(files[0].name)) throw new Error('Unsupported file');
+        const file = files[0];
+        const dataURL = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reader.onabort = () => reject(new Error('Read failed'));
+          reader.readAsDataURL(file);
+        });
+        if (current()) vscode.postMessage({ type: 'dropImage', token, image: { name: file.name, data: dataURL.slice(dataURL.indexOf(',') + 1) } });
+      } else {
+        const resources = transfer.getData('resourceurls');
+        const uris = resources ? JSON.parse(resources) : transfer.getData('text/uri-list').split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('#'));
+        if (!Array.isArray(uris) || uris.length !== 1 || typeof uris[0] !== 'string') throw new Error('Drop one image');
+        vscode.postMessage({ type: 'dropImage', token, uri: uris[0] });
+      }
+    } catch { if (current()) vscode.postMessage({ type: 'dropImageError', token }); }
   });
   fit(); controls(); send('ready');
 })();
