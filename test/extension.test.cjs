@@ -14,7 +14,7 @@ function setup() {
   const vscode = {
     workspace: { registerTextDocumentContentProvider: () => ({ dispose() {} }), onDidChangeTextDocument: () => ({ dispose() {} }), onDidCloseTextDocument: () => ({ dispose() {} }) },
     Range: class { constructor(start, end) { this.start = start; this.end = end; } }, EndOfLine: { CRLF: 2, LF: 1 },
-    version: "1.105.0", env: { clipboard: { writeText: async text => { clipboard.text = text; } } },
+    version: "1.105.0", extensions: {}, ProgressLocation: { Notification: 15 }, env: { clipboard: { writeText: async text => { clipboard.text = text; } } },
     Uri: { parse: value => { const u = new URL(value); return { scheme: u.protocol.slice(0, -1), authority: u.host, path: decodeURIComponent(u.pathname), query: u.search, fragment: u.hash }; }, joinPath: (base, ...parts) => ({ fsPath: path.join(base.fsPath, ...parts), toString: () => parts.join('/') }) },
     window: { registerWebviewViewProvider: (_, p) => { provider = p; return { dispose() {} }; } },
     commands: { registerCommand: (name, fn) => { commands.set(name, fn); return { dispose() {} }; }, executeCommand: async name => { if (name === 'localFM.chat.focus') listener({ type: 'ready' }); } }
@@ -32,6 +32,7 @@ function setup() {
       return {
         checkStatus: (binary, timeout, onEvent) => job(undefined, onEvent || (() => {})),
         generate: (binary, request, onEvent, timeoutMs, spare) => { if (spare) spare.taken = true; return job(request, onEvent, spare); },
+        commitMessage: (binary, request, onEvent) => { const j = job(request, onEvent); j.commit = true; return j; },
         prepare: () => { const spare = { taken: false, disposed: false, dispose() { if (!this.taken) this.disposed = true; } }; spares.push(spare); return spare; }
       };
     }
@@ -287,5 +288,69 @@ test('explorer context menu waits for the model check, then attaches the file wi
   s.send({ type: 'refresh' }); s.jobs.at(-1).onEvent({ type: 'ready', images: false }); s.jobs.at(-1).resolve(); await tick();
   await s.commands.get('localFM.attachImageFile')(file);
   assert.equal(reads, 1); assert.match(infos.at(-1), /macOS 27/);
+  s.provider.dispose();
+});
+
+test('commit message uses staged changes first, retries a smaller diff on context limit, and asks before overwriting', async () => {
+  const s = setup();
+  const messages = [];
+  const progress = [];
+  let cancelRequested;
+  const diffs = { true: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+staged\n', false: 'diff --git a/b.ts b/b.ts\n@@ -1 +1 @@\n+unstaged\n' };
+  const repository = { rootUri: { fsPath: '/repo' }, inputBox: { value: '' }, state: { indexChanges: [{}] }, diff: async cached => diffs[cached] };
+  const other = { ...repository, rootUri: { fsPath: '/other' } };
+  let language = 'ja';
+  let confirm;
+  s.vscode.extensions.getExtension = () => ({ isActive: true, exports: { enabled: true, getAPI: () => ({ repositories: [repository, other], getRepository: uri => uri === repository.rootUri ? repository : null }) } });
+  s.vscode.workspace.getConfiguration = () => ({ get: () => language });
+  Object.assign(s.vscode.window, {
+    withProgress: (options, task) => { progress.push(options.title); return task({}, { onCancellationRequested: fn => { cancelRequested = fn; return { dispose() {} }; } }); },
+    showInformationMessage: async text => { messages.push(text); },
+    showWarningMessage: async (text, options) => { messages.push(text); return options?.modal ? confirm : undefined; }
+  });
+  const run = source => s.commands.get('localFM.generateCommitMessage')(source);
+  const next = async () => { for (let i = 0; i < 5; i++) await tick(); return s.jobs.filter(job => job.commit).at(-1); };
+  const answer = (job, fields) => { job.onEvent({ type: 'commit', commitType: 'feat', scope: '', body: [], ...fields }); job.resolve(); };
+
+  let done = run({ rootUri: repository.rootUri });
+  let job = await next();
+  assert.equal(job.request.language, 'ja');
+  assert.match(job.request.diff, /\+staged/);
+  assert.match(progress.at(-1), /ステージ済み/);
+  job.reject(new DiagnosticError('上限', 'contextLimit'));
+  const retry = await next();
+  assert.notEqual(retry, job);
+  answer(retry, { subject: 'Add staged change', body: ['detail'] }); await done;
+  assert.equal(repository.inputBox.value, 'feat: add staged change\n\n- detail');
+
+  repository.state.indexChanges = []; language = 'en';
+  done = run({ rootUri: repository.rootUri });
+  job = await next();
+  assert.equal(job.request.language, 'en');
+  assert.match(job.request.diff, /\+unstaged/);
+  assert.match(progress.at(-1), /未ステージ/);
+  answer(job, { subject: 'replace' }); await done;
+  assert.equal(repository.inputBox.value, 'feat: add staged change\n\n- detail', 'declined overwrite keeps the typed message');
+  assert.match(messages.at(-1), /置き換えますか/);
+  confirm = '置き換える';
+  done = run({ rootUri: repository.rootUri });
+  answer(await next(), { subject: 'replace' }); await done;
+  assert.equal(repository.inputBox.value, 'feat: replace');
+
+  repository.inputBox.value = '';
+  done = run({ rootUri: repository.rootUri });
+  job = await next();
+  assert.ok(cancelRequested);
+  job.reject(new DiagnosticError('生成を停止しました。', 'cancelled')); await done;
+  assert.equal(repository.inputBox.value, '');
+  done = run({ rootUri: repository.rootUri });
+  job = await next();
+  job.reject(new DiagnosticError('モデル準備中', 'modelNotReady')); await done;
+  assert.match(messages.at(-1), /コミットメッセージを生成できませんでした。モデル準備中 .*ダウンロード/);
+  const count = s.jobs.length;
+  diffs.false = '';
+  await run({ rootUri: repository.rootUri });
+  assert.match(messages.at(-1), /コミットする変更がありません/);
+  assert.equal(s.jobs.length, count);
   s.provider.dispose();
 });

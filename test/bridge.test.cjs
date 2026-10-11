@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const { parseEvent, checkStatus, generate, prepare } = require('../dist/bridge');
+const { parseEvent, checkStatus, generate, prepare, commitMessage } = require('../dist/bridge');
 
 function fixture(t, source) {
   const directory = mkdtempSync(join(tmpdir(), 'local-fm-test-'));
@@ -92,4 +92,17 @@ test('disposing an idle spare stops it', async t => {
   const spare = prepare(file);
   spare.dispose();
   assert.equal(spare.take(), undefined);
+});
+test('commit events must carry string fields and a string body list', () => {
+  assert.deepEqual(parseEvent('{"type":"commit","commitType":"feat","scope":"","subject":"add x","body":["a"]}').body, ['a']);
+  assert.throws(() => parseEvent('{"type":"commit","commitType":"feat","scope":"","subject":"add x","body":"a"}'));
+  assert.throws(() => parseEvent('{"type":"commit","commitType":"feat","scope":null,"subject":"add x","body":[]}'));
+});
+test('commit mode passes the diff and language to the helper and rejects chat snapshots', async t => {
+  const file = fixture(t, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{const r=JSON.parse(input);console.log(JSON.stringify({type:'commit',commitType:'feat',scope:process.argv[2],subject:r.diff,body:[r.language]}));console.log('{"type":"done"}');});`);
+  const events = [];
+  await commitMessage(file, { diff: '+x', language: 'ja' }, e => events.push(e)).done;
+  assert.deepEqual(events[0], { type: 'commit', commitType: 'feat', scope: '--commit', subject: '+x', body: ['ja'] });
+  const chat = fixture(t, `console.log('{"type":"snapshot","text":"x"}');console.log('{"type":"done"}');`);
+  await assert.rejects(commitMessage(chat, { diff: '+x', language: 'en' }, () => {}).done, /予期しない/);
 });

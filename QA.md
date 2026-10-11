@@ -74,3 +74,12 @@
 - 利用者の実機確認: Finderからのドロップは成功。ファイル一覧からのShift＋ドロップは、確認用ビルドでWebviewに`dragenter`1回・`drop`1回のみ届き`dragover`が0回。VS Codeがドラッグ中にWebviewのpointer-eventsを切り替えるため、受け付けが断続的になる。ドロップできた場合のURI読み取りは成功。
 - 確実な代替として、ファイル一覧のPNG/JPEGの右クリックに「Local FM: 画像をチャットに添付」を追加。ドロップと同じURI検証と、バイト列による形式判定を使う。チャットを開いた直後のモデル確認は完了を待ってから添付する。コマンドパレットから実行した場合はファイル選択ダイアログを開く。
 - `npm run check`、`npm test`（35件）、SDK 27.0での`npm run package`成功。
+
+## コミットメッセージ生成（未リリース）
+
+- ソース管理ビューのタイトルバー（`scm/title`、`scmProvider == git`）とコマンドパレットから実行。入力欄内のメニュー`scm/inputBox`はproposed API（`contribSourceControlInputBoxMenu`）であることをVS Code本体で確認したため使わない。
+- Swiftヘルパーの`--commit`モード。`@Generable`マクロのプラグインはCommand Line Toolsに含まれずXcodeにのみあるため、`DynamicGenerationSchema`で実行時にスキーマを構築（type 10種の列挙、scope、subject、body最大3件）。
+- 差分は変更行のみ・ファイル間で均等配分・最大6,000文字。ロックファイル等は内容を省略。`contextLimit`時は半分にして再試行（下限1,500文字）。
+- `npm test`: 41件成功。差分圧縮の予算遵守と省略、整形（type接頭辞の除去、件名の小文字化、略語は維持）、イベント検証、ステージ済み優先・未ステージへのフォールバック、上限時の再試行、上書き確認、キャンセル、エラー表示、変更なしを検証。
+- 実モデル（開発機、サンドボックス外で実行）: このリポジトリの過去4コミットの差分で英語・日本語とも生成を確認。4件ともtypeは`feat`、日本語指定で件名・本文とも日本語。サンドボックス内ではチャットを含めて`LanguageModelError -1`になる（既存機能も同様のため環境要因）。
+- 実VS Codeでのボタン表示・入力欄への書き込み・Copilotとの併存は、開発側では未確認。

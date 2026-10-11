@@ -5,7 +5,9 @@ import { DiagnosticError, isFailureCode, FailureCode } from './diagnostics';
 export type ChatImage = { name: string; data: string; mime: 'image/png' | 'image/jpeg' };
 export type Turn = { role: 'user' | 'assistant'; text: string; image?: ChatImage };
 export type Request = { prompt: string; history: Turn[]; image?: ChatImage };
-export type Event = { type: 'ready' | 'done'; images?: boolean } | { type: 'snapshot'; text: string } | { type: 'error'; message: string; code?: FailureCode; nativeDomain?: string; nativeCode?: number };
+export type CommitRequest = { diff: string; language: 'en' | 'ja' };
+export type Event = { type: 'ready' | 'done'; images?: boolean } | { type: 'snapshot'; text: string } |
+  { type: 'commit'; commitType: string; scope: string; subject: string; body: string[] } | { type: 'error'; message: string; code?: FailureCode; nativeDomain?: string; nativeCode?: number };
 export type Job = { done: Promise<void>; cancel: () => void };
 /** A generation helper started ahead of the request, so it can load the model while idle. */
 export type Spare = { take: () => ChildProcessWithoutNullStreams | undefined; dispose: () => void };
@@ -13,6 +15,8 @@ export function parseEvent(line: string): Event {
   const event = JSON.parse(line);
   if (event && (event.type === 'ready' || event.type === 'done' ||
     (event.type === 'snapshot' && typeof event.text === 'string') ||
+    (event.type === 'commit' && [event.commitType, event.scope, event.subject].every(value => typeof value === 'string') &&
+      Array.isArray(event.body) && event.body.every((item: unknown) => typeof item === 'string')) ||
     (event.type === 'error' && typeof event.message === 'string' &&
       (event.code === undefined || isFailureCode(event.code)) &&
       (event.nativeDomain === undefined || (typeof event.nativeDomain === 'string' && /^[A-Za-z0-9_.-]{1,160}$/.test(event.nativeDomain))) &&
@@ -28,6 +32,11 @@ export function checkStatus(binary: string, timeoutMs = 15_000, onEvent: (event:
 /** Streams a response. Resolves only after `done`; snapshots carry the full text so far. Uses `spare` when it is still running. */
 export function generate(binary: string, request: Request, onEvent: (event: Event) => void, timeoutMs = 180_000, spare?: Spare): Job {
   return run(spare?.take() ?? start(binary, []), JSON.stringify(request), { allowed: ['snapshot', 'done'], terminal: 'done' }, onEvent, timeoutMs);
+}
+
+/** Asks for a structured commit message for `request.diff`; emits one `commit` event before `done`. */
+export function commitMessage(binary: string, request: CommitRequest, onEvent: (event: Event) => void, timeoutMs = 90_000): Job {
+  return run(start(binary, ['--commit']), JSON.stringify(request), { allowed: ['commit', 'done'], terminal: 'done' }, onEvent, timeoutMs);
 }
 
 /** Starts a generation helper that waits on stdin until `generate` takes it. */

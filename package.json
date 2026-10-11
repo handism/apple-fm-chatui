@@ -57,6 +57,11 @@
         "command": "localFM.selection.bullets",
         "title": "Local FM: 選択テキストを箇条書きにする",
         "enablement": "editorHasSelection && resourceScheme != local-fm-preview"
+      },
+      {
+        "command": "localFM.generateCommitMessage",
+        "title": "Local FM: コミットメッセージを生成",
+        "icon": "$(wand)"
       }
     ],
     "viewsContainers": {
@@ -112,7 +117,32 @@
           "when": "!explorerResourceIsFolder && resourceExtname =~ /^\\.(png|jpe?g)$/i",
           "group": "localFM@1"
         }
+      ],
+      "scm/title": [
+        {
+          "command": "localFM.generateCommitMessage",
+          "when": "scmProvider == git",
+          "group": "navigation"
+        }
       ]
+    },
+    "configuration": {
+      "title": "Local FM",
+      "properties": {
+        "localFM.commitMessage.language": {
+          "type": "string",
+          "enum": [
+            "en",
+            "ja"
+          ],
+          "enumDescriptions": [
+            "英語",
+            "日本語"
+          ],
+          "default": "en",
+          "description": "生成するコミットメッセージの件名と本文の言語。type（feat、fixなど）は常に英語です。"
+        }
+      }
     }
   },
   "scripts": {

@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { imageFromBytes, imageFromDrop, imageLimit } from './images';
 import { release } from 'node:os';
-import { checkStatus, generate, prepare, Job, Spare, Turn, ChatImage } from './bridge';
+import { checkStatus, commitMessage, generate, prepare, Job, Spare, Turn, ChatImage, Event } from './bridge';
+import { compactDiff, formatCommit } from './commit';
 import { DiagnosticError, diagnosticFailure, isFatal, recovery } from './diagnostics';
 import { limits } from './limits';
 import { SelectionEdits, SelectionEdit, SelectionAction, selectionActions } from './selection';
@@ -255,6 +256,71 @@ function imageUri(uri: vscode.Uri) {
   return uri;
 }
 const count = (value: number) => value.toLocaleString('en-US');
+
+// The parts of the built-in Git extension's API (vscode.git, API version 1) used here.
+type Repository = { rootUri: vscode.Uri; inputBox: { value: string }; state: { indexChanges: readonly unknown[] }; diff(cached?: boolean): Promise<string> };
+type GitAPI = { repositories: Repository[]; getRepository(uri: vscode.Uri): Repository | null };
+async function gitApi(): Promise<GitAPI | undefined> {
+  const extension = vscode.extensions.getExtension<{ enabled: boolean; getAPI(version: 1): GitAPI }>('vscode.git');
+  const exports = extension && (extension.isActive ? extension.exports : await extension.activate());
+  return exports?.enabled ? exports.getAPI(1) : undefined;
+}
+async function pickRepository(git: GitAPI, source: unknown): Promise<Repository | undefined> {
+  // The SCM title menu passes the clicked SourceControl, whose rootUri identifies the repository.
+  const root = (source as { rootUri?: vscode.Uri } | undefined)?.rootUri;
+  if (root) return git.getRepository(root) ?? undefined;
+  if (git.repositories.length <= 1) return git.repositories[0];
+  const active = vscode.window.activeTextEditor?.document.uri;
+  const current = active && git.getRepository(active);
+  if (current) return current;
+  const picked = await vscode.window.showQuickPick(git.repositories.map(repository => ({ label: basename(repository.rootUri.fsPath), description: repository.rootUri.fsPath, repository })),
+    { placeHolder: 'コミットメッセージを生成するリポジトリ' });
+  return picked?.repository;
+}
+let committing = false;
+/** Writes a Conventional Commits message for the staged changes (or, when nothing is staged, the unstaged ones) into the SCM input box. */
+async function generateCommitMessage(binary: string, source: unknown) {
+  if (committing) { void vscode.window.showInformationMessage('コミットメッセージを生成中です。'); return; }
+  committing = true;
+  try {
+    const git = await gitApi();
+    if (!git) { void vscode.window.showWarningMessage('VS CodeのGit機能が無効か、利用できません。'); return; }
+    const repository = await pickRepository(git, source);
+    if (!repository) { if (!git.repositories.length) void vscode.window.showInformationMessage('Gitリポジトリが開かれていません。'); return; }
+    const staged = repository.state.indexChanges.length > 0;
+    const diff = await repository.diff(staged);
+    if (!diff.trim()) { void vscode.window.showInformationMessage('コミットする変更がありません。新しいファイルはステージしてから実行してください。'); return; }
+    const language = vscode.workspace.getConfiguration('localFM.commitMessage').get('language') === 'ja' ? 'ja' : 'en';
+    let fields: Extract<Event, { type: 'commit' }> | undefined;
+    const completed = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, cancellable: true,
+      title: `Local FM: ${staged ? 'ステージ済み' : '未ステージ'}の変更からコミットメッセージを生成中…` }, async (_, token) => {
+      // The on-device context window is small: halve the diff until it fits.
+      for (let budget: number = limits.commitDiff; ; budget = Math.floor(budget / 2)) {
+        const job = commitMessage(binary, { diff: compactDiff(diff, budget), language }, event => { if (event.type === 'commit') fields = event; });
+        const cancel = token.onCancellationRequested(job.cancel);
+        try { await job.done; return true; }
+        catch (error) {
+          if (error instanceof DiagnosticError && error.code === 'cancelled') return false;
+          if (!(error instanceof DiagnosticError && error.code === 'contextLimit' && budget / 2 >= 1500)) throw error;
+        } finally { cancel.dispose(); }
+      }
+    });
+    if (!completed) return;
+    let message: string;
+    try { message = formatCommit(fields!); }
+    catch { throw new DiagnosticError('モデルからコミットメッセージを受信できませんでした。', 'generationFailed'); }
+    // The user may have typed a message while the model was generating.
+    if (repository.inputBox.value.trim() && repository.inputBox.value !== message) {
+      const replace = await vscode.window.showWarningMessage('ソース管理の入力欄にあるメッセージを置き換えますか？', { modal: true, detail: message }, '置き換える');
+      if (replace !== '置き換える') return;
+    }
+    repository.inputBox.value = message;
+    await vscode.commands.executeCommand('workbench.view.scm');
+  } catch (error) {
+    const failure = diagnosticFailure(error);
+    void vscode.window.showWarningMessage(`コミットメッセージを生成できませんでした。${failure.message} ${recovery(failure.code)}`);
+  } finally { committing = false; }
+}
 export function activate(context: vscode.ExtensionContext) {
   const provider = new ChatProvider(context);
   context.subscriptions.push(provider,
@@ -262,5 +328,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('localFM.open', () => vscode.commands.executeCommand('localFM.chat.focus')),
     ...Object.keys(selectionActions).map(action => vscode.commands.registerCommand(`localFM.selection.${action}`, () => provider.selectionAction(action as SelectionAction))),
     vscode.commands.registerCommand('localFM.attachSelection', () => provider.attachSelection()),
-    vscode.commands.registerCommand('localFM.attachImageFile', (uri?: vscode.Uri) => provider.attachImageFile(uri)));
+    vscode.commands.registerCommand('localFM.attachImageFile', (uri?: vscode.Uri) => provider.attachImageFile(uri)),
+    vscode.commands.registerCommand('localFM.generateCommitMessage', (source?: unknown) =>
+      generateCommitMessage(vscode.Uri.joinPath(context.extensionUri, 'bin', 'local-fm').fsPath, source)));
 }

@@ -8,6 +8,8 @@ export const limits = {
   historyTurns: 100,
   /** Characters per history turn. */
   historyText: 24000,
+  /** Characters of compacted diff sent for a commit message; halved on a context-limit error. */
+  commitDiff: 6000,
   /** Selection edit suggestions kept per conversation. */
   edits: 20
 } as const;
