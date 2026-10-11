@@ -271,6 +271,22 @@ test('Finder bytes and Explorer URI drops attach without sending; invalid and st
   s.provider.dispose();
 });
 
+test('pasted images attach without sending and report paste-specific errors', async () => {
+  const s = setup();
+  s.send({ type: 'ready' }); s.jobs[0].onEvent({ type: 'ready', images: true }); s.jobs[0].resolve(); await tick();
+  const data = Buffer.from([255, 216, 255]).toString('base64');
+  s.send({ type: 'dropImage', token: s.last().imageToken, image: { name: 'pasted-image.jpg', data }, source: 'paste' });
+  assert.equal(s.last().image.mime, 'image/jpeg'); assert.equal(s.jobs.length, 1);
+  s.send({ type: 'dropImage', token: s.last().imageToken, image: { name: 'pasted-image.png', data: Buffer.from('<svg/>').toString('base64') }, source: 'paste' });
+  assert.equal(s.last().image.name, 'pasted-image.jpg');
+  assert.match(s.last().status, /貼り付けた画像を添付できません/);
+  s.send({ type: 'dropImageError', token: s.last().imageToken });
+  assert.match(s.last().status, /ドロップしてください/);
+  s.send({ type: 'dropImageError', token: s.last().imageToken, source: 'paste' });
+  assert.match(s.last().status, /貼り付けてください/);
+  s.provider.dispose();
+});
+
 test('explorer context menu waits for the model check, then attaches the file without sending', async () => {
   const s = setup();
   const bytes = Buffer.from([255,216,255,224]);

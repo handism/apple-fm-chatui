@@ -150,7 +150,7 @@
     $('image-attachment').hidden = !data.image;
     if (data.image) { $('image-preview').src = `data:${data.image.mime};base64,${data.image.data}`; $('image-name').textContent = data.image.name; }
     else { $('image-preview').removeAttribute('src'); $('image-name').textContent = ''; }
-    $('image-support').textContent = data.imagesSupported ? 'PNG / JPEG・10 MBまで。ファイル一覧からは右クリックで添付' : '画像入力にはmacOS 27以降と対応ビルドが必要です';
+    $('image-support').textContent = data.imagesSupported ? 'PNG / JPEG・10 MBまで。⌘Vで貼り付け、ファイル一覧からは右クリックで添付' : '画像入力にはmacOS 27以降と対応ビルドが必要です';
     controls();
   });
   $('composer').onsubmit = event => {
@@ -203,14 +203,8 @@
       const files = Array.from(transfer.files);
       if (files.length) {
         if (files.length !== 1 || !files[0].size || files[0].size > 10 * 1024 * 1024 || !/\.(png|jpe?g)$/i.test(files[0].name)) throw new Error('Unsupported file');
-        const file = files[0];
-        const dataURL = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result);
-          reader.onerror = reader.onabort = () => reject(new Error('Read failed'));
-          reader.readAsDataURL(file);
-        });
-        if (current()) vscode.postMessage({ type: 'dropImage', token, image: { name: file.name, data: dataURL.slice(dataURL.indexOf(',') + 1) } });
+        const image = await encode(files[0], files[0].name);
+        if (current()) vscode.postMessage({ type: 'dropImage', token, image });
       } else {
         const resources = transfer.getData('resourceurls');
         const uris = resources ? JSON.parse(resources) : transfer.getData('text/uri-list').split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('#'));
@@ -219,5 +213,31 @@
       }
     } catch { if (current()) vscode.postMessage({ type: 'dropImageError', token }); }
   });
+  // Pasting a screenshot attaches it like a Finder drop. Clipboards that also carry text
+  // (e.g. cells copied from a spreadsheet, which include a rendered picture) paste the text as usual.
+  document.addEventListener('paste', async event => {
+    const clipboard = event.clipboardData;
+    const files = Array.from(clipboard?.items || []).filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean);
+    if (!files.length || clipboard.getData('text/plain')) return;
+    event.preventDefault();
+    if (!canDrop()) return;
+    const read = ++dropRead;
+    const token = state.imageToken;
+    const current = () => read === dropRead && token === state.imageToken && canDrop();
+    try {
+      if (files.length !== 1 || !files[0].size || files[0].size > 10 * 1024 * 1024 || !['image/png', 'image/jpeg'].includes(files[0].type)) throw new Error('Unsupported image');
+      const image = await encode(files[0], `pasted-image.${files[0].type === 'image/png' ? 'png' : 'jpg'}`);
+      if (current()) vscode.postMessage({ type: 'dropImage', token, image, source: 'paste' });
+    } catch { if (current()) vscode.postMessage({ type: 'dropImageError', token, source: 'paste' }); }
+  });
+  async function encode(file, name) {
+    const dataURL = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reader.onabort = () => reject(new Error('Read failed'));
+      reader.readAsDataURL(file);
+    });
+    return { name, data: dataURL.slice(dataURL.indexOf(',') + 1) };
+  }
   fit(); controls(); send('ready');
 })();

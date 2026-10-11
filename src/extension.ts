@@ -62,7 +62,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
         case 'applyEdit': if (typeof data.id === 'string') void this.edits.apply(data.id); break;
         case 'discardEdit': if (typeof data.id === 'string') this.edits.discard(data.id); break;
         case 'dropImage': if (data.token === this.imageToken()) void this.attachImage(data); break;
-        case 'dropImageError': if (data.token === this.imageToken() && !this.busy) { this.status = '画像は1枚ずつ、10 MB以下のPNGまたはJPEGをドロップしてください。'; this.publish(); } break;
+        case 'dropImageError': if (data.token === this.imageToken() && !this.busy) { this.status = imageError(data); this.publish(); } break;
         case 'attachImage': void this.attachImage(); break;
         case 'removeImage': this.image = undefined; ++this.imageSelection; this.publish(); break;
         case 'attach': void this.attachSelection(); break;
@@ -207,7 +207,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
       this.image = imageFromBytes(basename(files[0].path), bytes);
       this.publish();
     } catch {
-      if (current()) { this.status = drop ? '画像は1枚ずつ、10 MB以下のPNGまたはJPEGをドロップしてください。' : '画像を読み込めません。10 MB以下のPNGまたはJPEGを選択してください。'; this.publish(); }
+      if (current()) { this.status = drop ? imageError(drop) : '画像を読み込めません。10 MB以下のPNGまたはJPEGを選択してください。'; this.publish(); }
     }
   }
   // Explorer context menu: a reliable alternative to Shift-dropping, which VS Code only intermittently forwards to webviews.
@@ -248,6 +248,10 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   }
   dispose() { ++this.imageSelection; this.image = undefined; this.messages = []; this.history = []; this.view = undefined; this.stop(); this.dropSpare(); this.edits.dispose(); }
 }
+// Pasted and dropped images share the webview message; only the wording differs.
+const imageError = (message: Record<string, unknown>) => message.source === 'paste'
+  ? '貼り付けた画像を添付できません。10 MB以下のPNGまたはJPEGを1枚貼り付けてください。'
+  : '画像は1枚ずつ、10 MB以下のPNGまたはJPEGをドロップしてください。';
 // Only local files or remote files inside the workspace, never URLs or other schemes.
 function imageUri(uri: vscode.Uri) {
   const local = uri.scheme === 'file' && (!uri.authority || uri.authority === 'localhost');
