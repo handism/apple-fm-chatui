@@ -389,6 +389,16 @@ test('compare mode asks Local FM and Ollama together and keeps a separate histor
   assert.equal(s.last().compare, false);
   await exchange(s, 'solo');
   assert.equal(s.ollama.length, 0);
+  // An unregistered setting (extension updated without a window reload) is reported, not swallowed.
+  const warnings = [], executed = [];
+  s.vscode.window.showWarningMessage = async (text, ...items) => { warnings.push(text); return items[0]; };
+  const execute = s.vscode.commands.executeCommand;
+  s.vscode.commands.executeCommand = async (name, ...args) => { executed.push(name); return execute(name, ...args); };
+  const getConfiguration = s.vscode.workspace.getConfiguration;
+  s.vscode.workspace.getConfiguration = section => ({ ...getConfiguration(section), update: async () => { throw new Error('not a registered configuration'); } });
+  s.send({ type: 'toggleCompare' }); await tick(); await tick();
+  assert.match(warnings[0], /再読み込み/); assert.deepEqual(executed, ['workbench.action.reloadWindow']);
+  s.vscode.workspace.getConfiguration = getConfiguration;
   s.send({ type: 'toggleCompare' }); await tick();
   assert.equal(s.settings['localFM.compare'].enabled, true);
   s.settings['localFM.ollama'] = { endpoint: 'http://127.0.0.1:11434', model: 'gemma' };

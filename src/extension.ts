@@ -61,7 +61,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
           else void this.check();
           break;
         case 'refresh': if (!this.busy) void this.check(); break;
-        case 'toggleCompare': void vscode.workspace.getConfiguration('localFM.compare').update('enabled', !compareEnabled(), vscode.ConfigurationTarget.Global); break;
+        case 'toggleCompare': void toggleCompare(); break;
         case 'copyDiagnostics': void this.copyDiagnostics(); break;
         case 'previewEdit': if (typeof data.id === 'string') void this.edits.preview(data.id); break;
         case 'applyEdit': if (typeof data.id === 'string') void this.edits.apply(data.id); break;
@@ -304,6 +304,15 @@ function imageUri(uri: vscode.Uri) {
 }
 const count = (value: number) => value.toLocaleString('en-US');
 const compareEnabled = () => vscode.workspace.getConfiguration('localFM.compare').get<boolean>('enabled') === true;
+async function toggleCompare() {
+  try { await vscode.workspace.getConfiguration('localFM.compare').update('enabled', !compareEnabled(), vscode.ConfigurationTarget.Global); }
+  catch {
+    // After an in-place update VS Code may restart the extension without registering its new settings until the window reloads.
+    const reload = 'ウィンドウを再読み込み';
+    if (await vscode.window.showWarningMessage('比較モードを切り替えられませんでした。拡張機能を更新した直後は、ウィンドウを再読み込みしてから試してください。', reload) === reload)
+      await vscode.commands.executeCommand('workbench.action.reloadWindow');
+  }
+}
 
 // The parts of the built-in Git extension's API (vscode.git, API version 1) used here.
 type Repository = { rootUri: vscode.Uri; inputBox: { value: string }; state: { indexChanges: readonly unknown[] }; diff(cached?: boolean): Promise<string> };
