@@ -8,11 +8,14 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function setup() {
   let provider, listener;
-  const states = [], jobs = [], spares = [];
+  const states = [], jobs = [], spares = [], ollama = [];
+  const settings = { 'localFM.compare': {}, 'localFM.ollama': {}, 'localFM.commitMessage': {} };
   const commands = new Map();
   const clipboard = {};
   const vscode = {
-    workspace: { registerTextDocumentContentProvider: () => ({ dispose() {} }), onDidChangeTextDocument: () => ({ dispose() {} }), onDidCloseTextDocument: () => ({ dispose() {} }) },
+    ConfigurationTarget: { Global: 1 },
+    workspace: { getConfiguration: section => ({ get: key => settings[section]?.[key], update: async (key, value) => { settings[section][key] = value; } }), onDidChangeConfiguration: () => ({ dispose() {} }),
+      registerTextDocumentContentProvider: () => ({ dispose() {} }), onDidChangeTextDocument: () => ({ dispose() {} }), onDidCloseTextDocument: () => ({ dispose() {} }) },
     Range: class { constructor(start, end) { this.start = start; this.end = end; } }, EndOfLine: { CRLF: 2, LF: 1 },
     version: "1.105.0", extensions: {}, ProgressLocation: { Notification: 15 }, env: { clipboard: { writeText: async text => { clipboard.text = text; } } },
     Uri: { parse: value => { const u = new URL(value); return { scheme: u.protocol.slice(0, -1), authority: u.host, path: decodeURIComponent(u.pathname), query: u.search, fragment: u.hash }; }, joinPath: (base, ...parts) => ({ fsPath: path.join(base.fsPath, ...parts), toString: () => parts.join('/') }) },
@@ -36,6 +39,15 @@ function setup() {
         prepare: () => { const spare = { taken: false, disposed: false, dispose() { if (!this.taken) this.disposed = true; } }; spares.push(spare); return spare; }
       };
     }
+    if (id === './ollama') {
+      class OllamaError extends Error {}
+      return { OllamaError, ollamaChat: (endpoint, model, request, onEvent) => {
+        let resolve, reject;
+        const done = new Promise((yes, no) => { resolve = yes; reject = no; });
+        const job = { endpoint, model, request, onEvent, resolve, reject, done, OllamaError, cancel() { reject(new OllamaError('生成を停止しました。')); } };
+        ollama.push(job); return job;
+      } };
+    }
     return original.call(this, id, ...args);
   };
   try {
@@ -49,7 +61,7 @@ function setup() {
   };
   provider.resolveWebviewView({ webview, onDidDispose: () => ({ dispose() {} }) });
   const last = () => states.filter(s => s.type === 'state').at(-1);
-  return { provider, webview, states, jobs, spares, commands, vscode, clipboard, last, send: message => listener(message) };
+  return { provider, webview, states, jobs, spares, ollama, settings, commands, vscode, clipboard, last, send: message => listener(message) };
 }
 
 test('view sends completed history, rejects double send, and ignores stale completion after reset', async () => {
@@ -368,5 +380,61 @@ test('commit message uses staged changes first, retries a smaller diff on contex
   await run({ rootUri: repository.rootUri });
   assert.match(messages.at(-1), /コミットする変更がありません/);
   assert.equal(s.jobs.length, count);
+  s.provider.dispose();
+});
+
+test('compare mode asks Local FM and Ollama together and keeps a separate history for each', async () => {
+  const s = setup();
+  s.send({ type: 'ready' }); s.jobs[0].resolve(); await tick();
+  assert.equal(s.last().compare, false);
+  await exchange(s, 'solo');
+  assert.equal(s.ollama.length, 0);
+  s.send({ type: 'toggleCompare' }); await tick();
+  assert.equal(s.settings['localFM.compare'].enabled, true);
+  s.settings['localFM.ollama'] = { endpoint: 'http://127.0.0.1:11434', model: 'gemma' };
+  s.send({ type: 'send', text: 'hello' });
+  assert.deepEqual(s.last().messages.slice(-3).map(m => [m.role, m.source]), [['user', undefined], ['assistant', undefined], ['assistant', 'ollama']]);
+  // Ollama waits for Local FM, since running both at once slows Local FM down.
+  assert.equal(s.ollama.length, 0);
+  s.jobs.at(-1).onEvent({ type: 'snapshot', text: 'apple says' }); s.jobs.at(-1).resolve(); await tick();
+  const remote = s.ollama[0];
+  assert.equal(s.last().busy, true);
+  assert.equal(s.last().messages.at(-2).text, 'apple says');
+  assert.equal(remote.endpoint, 'http://127.0.0.1:11434'); assert.equal(remote.model, 'gemma');
+  assert.equal(remote.request.prompt, 'hello'); assert.deepEqual(remote.request.history, []);
+  remote.onEvent({ type: 'model', name: 'gemma' });
+  remote.onEvent({ type: 'snapshot', text: 'ollama says' });
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.deepEqual(s.states.at(-1), { type: 'snapshot', index: 4, text: 'ollama says' });
+  remote.resolve(); await tick();
+  assert.equal(s.last().busy, false);
+  assert.equal(s.last().messages.at(-1).model, 'gemma');
+  s.send({ type: 'send', text: 'again' });
+  assert.deepEqual(s.jobs.at(-1).request.history.map(turn => turn.text), ['solo', 'solo!', 'hello', 'apple says']);
+  s.jobs.at(-1).onEvent({ type: 'snapshot', text: 'fine' }); s.jobs.at(-1).resolve(); await tick();
+  assert.deepEqual(s.ollama[1].request.history.map(turn => turn.text), ['hello', 'ollama says']);
+  // An Ollama failure stays on its own answer and leaves Local FM unaffected.
+  s.ollama[1].reject(new s.ollama[1].OllamaError('Ollamaに接続できません')); await tick();
+  assert.equal(s.last().diagnostics.code, undefined);
+  assert.match(s.last().messages.at(-1).note, /接続できません/);
+  assert.equal(s.last().messages.at(-2).text, 'fine');
+  s.send({ type: 'send', text: 'third' }); s.jobs.at(-1).onEvent({ type: 'snapshot', text: 'x' }); s.jobs.at(-1).resolve(); await tick();
+  assert.deepEqual(s.ollama[2].request.history.map(turn => turn.text), ['hello', 'ollama says']);
+  s.send({ type: 'stop' }); await tick();
+  assert.equal(s.last().busy, false);
+  // Stopping during Local FM skips Ollama for that message.
+  s.send({ type: 'send', text: 'stopped' }); s.send({ type: 'stop' }); s.jobs.at(-1).resolve(); await tick();
+  assert.equal(s.ollama.length, 3);
+  s.send({ type: 'reset' });
+  s.send({ type: 'send', text: 'fresh' }); s.jobs.at(-1).onEvent({ type: 'snapshot', text: 'y' }); s.jobs.at(-1).resolve(); await tick();
+  assert.deepEqual(s.ollama[3].request.history, []);
+  s.ollama[3].reject(new Error('x')); await tick();
+  // Selection edits are never compared.
+  const source = { uri: { scheme: 'file' }, version: 1, isClosed: false, eol: 1, getText: range => range ? 'selected' : 'all selected text', offsetAt: value => value };
+  s.vscode.window.activeTextEditor = { document: source, selections: [{}], selection: { start: 4, end: 12, isEmpty: false } };
+  const count = s.ollama.length;
+  const action = s.commands.get('localFM.selection.summarize')(); await tick();
+  s.jobs.at(-1).onEvent({ type: 'snapshot', text: 'summary' }); s.jobs.at(-1).resolve(); await action;
+  assert.equal(s.ollama.length, count);
   s.provider.dispose();
 });

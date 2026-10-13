@@ -2,7 +2,7 @@
   "name": "apple-fm-chatui",
   "displayName": "Local FM Chat",
   "description": "MacのApple Foundation Modelsと、VS Codeのサイドバーでローカルチャット。",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "local-fm",
   "license": "MIT",
   "repository": {
@@ -141,6 +141,22 @@
           ],
           "default": "en",
           "description": "生成するコミットメッセージの件名と本文の言語。type（feat、fixなど）は常に英語です。"
+        },
+        "localFM.compare.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "比較モード。チャットの送信ごとにLocal FMとOllamaの両方に回答させ、並べて表示します。会話の履歴はモデルごとに別々に保持します。選択テキストの処理とコミットメッセージ生成はLocal FMのみです。"
+        },
+        "localFM.ollama.model": {
+          "type": "string",
+          "default": "",
+          "description": "比較モードで使うOllamaのモデル名（例: gemma4:26b-a4b-it-qat）。空欄の場合はインストール済みの最初のモデルを使います。"
+        },
+        "localFM.ollama.endpoint": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "scope": "application",
+          "description": "OllamaサーバーのURL。会話の内容はこのURLに送信されます。"
         }
       }
     }

@@ -8,16 +8,20 @@ import { checkStatus, commitMessage, generate, prepare, Job, Spare, Turn, ChatIm
 import { compactDiff, formatCommit } from './commit';
 import { DiagnosticError, diagnosticFailure, isFatal, recovery } from './diagnostics';
 import { limits } from './limits';
+import { ollamaChat, OllamaError } from './ollama';
 import { SelectionEdits, SelectionEdit, SelectionAction, selectionActions } from './selection';
 
-type Message = Turn & { incomplete?: boolean; editId?: string; note?: string };
+type Message = Turn & { incomplete?: boolean; editId?: string; note?: string; source?: 'ollama'; model?: string };
 class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view?: vscode.WebviewView;
   private messages: Message[] = [];
   private history: Turn[] = [];
-  private active?: Job;
+  /** Compare mode keeps a separate conversation with Ollama, built from its own answers. */
+  private ollamaHistory: Turn[] = [];
+  private active: Job[] = [];
   private spare?: Spare;
   private snapshotTimer?: NodeJS.Timeout;
+  private snapshots = new Set<number>();
   private generation = 0;
   private busy = false;
   private ready = false;
@@ -51,12 +55,13 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
         case 'send': if (typeof data.text === 'string') void this.send(data.text); break;
         case 'stop': this.stop(); break;
         case 'reset':
-          this.stop(); this.edits.clear(); this.messages = []; this.history = []; this.attachment = ''; this.image = undefined; ++this.imageSelection;
+          this.stop(); this.edits.clear(); this.messages = []; this.history = []; this.ollamaHistory = []; this.attachment = ''; this.image = undefined; ++this.imageSelection;
           this.failure = undefined;
           if (this.ready) { this.status = this.availableStatus(); this.publish(); }
           else void this.check();
           break;
         case 'refresh': if (!this.busy) void this.check(); break;
+        case 'toggleCompare': void vscode.workspace.getConfiguration('localFM.compare').update('enabled', !compareEnabled(), vscode.ConfigurationTarget.Global); break;
         case 'copyDiagnostics': void this.copyDiagnostics(); break;
         case 'previewEdit': if (typeof data.id === 'string') void this.edits.preview(data.id); break;
         case 'applyEdit': if (typeof data.id === 'string') void this.edits.apply(data.id); break;
@@ -69,22 +74,24 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
         case 'removeAttachment': this.attachment = ''; this.publish(); break;
         case 'copy': if (typeof data.index === 'number' && Number.isInteger(data.index) && this.messages[data.index]) void vscode.env.clipboard.writeText(this.messages[data.index].text); break;
       }
-    })];
+    }), vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration('localFM.compare')) this.publish(); })];
     subscriptions.push(view.onDidDispose(() => { for (const item of subscriptions) item.dispose(); this.view = undefined; this.stop(); this.dropSpare(); }));
   }
   private publish() {
     // A full state supersedes any pending streamed text.
-    clearTimeout(this.snapshotTimer); this.snapshotTimer = undefined;
-    void this.view?.webview.postMessage({ type: 'state', messages: this.messages.map(message => ({ ...message, edit: message.editId ? this.edits.summary(message.editId) : undefined })), busy: this.busy, ready: this.ready, status: this.status, attachment: this.attachment, image: this.image, imagesSupported: this.imagesSupported, imageToken: this.imageToken(),
+    clearTimeout(this.snapshotTimer); this.snapshotTimer = undefined; this.snapshots.clear();
+    void this.view?.webview.postMessage({ type: 'state', messages: this.messages.map(message => ({ ...message, edit: message.editId ? this.edits.summary(message.editId) : undefined })), busy: this.busy, ready: this.ready, status: this.status, compare: compareEnabled(), attachment: this.attachment, image: this.image, imagesSupported: this.imagesSupported, imageToken: this.imageToken(),
       diagnostics: { availability: this.availability, lastResponseAt: this.lastResponseAt, lastCheckedAt: this.lastCheckedAt,
         code: this.failure?.code, guidance: this.failure ? recovery(this.failure.code) : undefined } });
   }
-  // Streaming sends only the growing message, at most every 50ms, so the view does not rebuild the conversation per token.
+  // Streaming sends only the growing messages, at most every 50ms, so the view does not rebuild the conversation per token.
   private publishSnapshot(index: number) {
+    this.snapshots.add(index);
     if (this.snapshotTimer) return;
     this.snapshotTimer = setTimeout(() => {
       this.snapshotTimer = undefined;
-      void this.view?.webview.postMessage({ type: 'snapshot', index, text: this.messages[index]?.text });
+      for (const item of this.snapshots) void this.view?.webview.postMessage({ type: 'snapshot', index: item, text: this.messages[item]?.text });
+      this.snapshots.clear();
     }, 50);
   }
   private warmSpare() { if (this.ready && !this.spare && this.view) this.spare = prepare(this.binary()); }
@@ -122,10 +129,10 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     const id = ++this.generation;
     this.busy = true; this.failure = undefined; this.status = 'モデルを確認しています…'; this.publish();
     const job = checkStatus(this.binary(), undefined, event => { if (id === this.generation && event.type === 'ready') this.imagesSupported = event.images === true; });
-    this.active = job;
+    this.active = [job];
     try { await job.done; if (id === this.generation) { this.ready = true; this.availability = 'available'; this.lastCheckedAt = new Date().toISOString(); this.status = this.availableStatus(); } }
     catch (error) { if (id === this.generation) { this.lastCheckedAt = new Date().toISOString(); this.fail(error, 'availability'); } }
-    finally { if (id === this.generation) { this.active = undefined; this.busy = false; this.warmSpare(); this.publish(); } }
+    finally { if (id === this.generation) { this.active = []; this.busy = false; this.warmSpare(); this.publish(); } }
   }
   private async send(text: string, edit?: SelectionEdit) {
     if (this.busy || !this.ready || (!text.trim() && (edit || !this.image))) return;
@@ -135,11 +142,17 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
     const prompt = !edit && this.attachment ? `${text.trim()}\n\n添付テキスト:\n${this.attachment}` : text.trim();
     if (prompt.length > limits.prompt) { this.status = `入力と添付の合計を${count(limits.prompt)}文字以内にしてください。`; this.publish(); return; }
     const id = ++this.generation;
-    this.busy = true; this.failure = undefined; if (!edit) { this.attachment = ''; this.image = undefined; ++this.imageSelection; } this.activeEdit = edit; this.status = 'このMacで生成中…';
+    // Selection edits produce a single replacement, so only chat messages are compared.
+    const compare = !edit && compareEnabled();
+    this.busy = true; this.failure = undefined; if (!edit) { this.attachment = ''; this.image = undefined; ++this.imageSelection; } this.activeEdit = edit;
+    this.status = compare ? 'このMacで生成中…（Local FM + Ollama）' : 'このMacで生成中…';
     this.messages.push({ role: 'user', text: edit ? `${selectionActions[edit.action].label}\n\n${edit.selected}` : prompt, ...(image ? { image } : {}) });
     const answer: Message = { role: 'assistant', text: '', incomplete: true, ...(edit ? { editId: edit.id } : {}) };
-    this.messages.push(answer); this.publish();
+    this.messages.push(answer);
     const index = this.messages.length - 1;
+    const ollamaAnswer: Message | undefined = compare ? { role: 'assistant', text: '', incomplete: true, source: 'ollama' } : undefined;
+    if (ollamaAnswer) this.messages.push(ollamaAnswer);
+    this.publish();
     if (!edit) void this.view?.webview.postMessage({ type: 'accepted' });
     let history = edit ? [] : this.history;
     let dropped = 0;
@@ -152,7 +165,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
         const job = generate(this.binary(), { prompt, history, ...(image ? { image } : {}) }, event => {
           if (id === this.generation && event.type === 'snapshot') { answer.text = event.text; this.publishSnapshot(index); }
         }, undefined, this.spare);
-        this.spare = undefined; this.active = job;
+        this.spare = undefined; this.active.push(job);
         try { await job.done; break; }
         catch (error) {
           // The on-device context window is small: retry with the older half of the exchanges dropped
@@ -160,7 +173,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
           if (id !== this.generation || edit || !history.length || !(error instanceof DiagnosticError && error.code === 'contextLimit')) throw error;
           trim(Math.ceil(history.length / 4) * 2);
           answer.text = ''; this.status = '会話が長いため、古いやり取りを省いて生成し直しています…'; this.publish();
-        }
+        } finally { this.active = this.active.filter(item => item !== job); }
       }
       if (id !== this.generation) return;
       if (!answer.text.trim()) throw new DiagnosticError('モデルから回答本文を受信できませんでした。', 'generationFailed');
@@ -171,14 +184,44 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
       this.lastResponseAt = new Date().toISOString();
       this.status = this.availableStatus();
     } catch (error) { if (id === this.generation) { if (edit) this.edits.fail(edit); this.fail(error, 'generation'); } }
-    finally { if (id === this.generation) { this.active = undefined; this.activeEdit = undefined; this.busy = false; this.warmSpare(); this.publish(); } }
+    finally {
+      // Ollama runs after Local FM: both share the GPU, and running them together slows Local FM several times over.
+      if (ollamaAnswer && id === this.generation) {
+        const status = this.status;
+        this.status = 'Ollamaで生成中…'; this.publish();
+        await this.askOllama(id, { role: 'user', text: prompt, ...(image ? { image } : {}) }, ollamaAnswer);
+        if (id === this.generation) this.status = status;
+      }
+      if (id === this.generation) { this.active = []; this.activeEdit = undefined; this.busy = false; this.warmSpare(); this.publish(); }
+    }
+  }
+  /** Streams Ollama's answer to `turn` into `answer`. Failures stay on that message. */
+  private async askOllama(id: number, turn: Turn, answer: Message) {
+    const index = this.messages.indexOf(answer);
+    const settings = vscode.workspace.getConfiguration('localFM.ollama');
+    const history = this.ollamaHistory.slice(Math.max(0, this.ollamaHistory.length + 2 - limits.historyTurns));
+    const job = ollamaChat(settings.get<string>('endpoint') || 'http://localhost:11434', settings.get<string>('model') || '', { prompt: turn.text, history, ...(turn.image ? { image: turn.image } : {}) }, event => {
+      if (id !== this.generation) return;
+      if (event.type === 'model') { answer.model = event.name; this.publish(); }
+      else { answer.text = event.text; this.publishSnapshot(index); }
+    });
+    this.active.push(job);
+    try {
+      await job.done;
+      if (id !== this.generation) return;
+      if (!answer.text.trim()) throw new OllamaError('Ollamaから回答本文を受信できませんでした。');
+      answer.incomplete = false;
+      this.ollamaHistory = [...history, turn, { role: 'assistant', text: answer.text }];
+    } catch (error) {
+      if (id === this.generation) answer.note = error instanceof OllamaError ? error.message : 'Ollamaで生成できませんでした。';
+    } finally { this.active = this.active.filter(item => item !== job); }
   }
   private stop() {
     ++this.generation;
     if (this.activeEdit) this.edits.fail(this.activeEdit);
     this.activeEdit = undefined;
-    if (this.active) { this.active.cancel(); this.status = '停止しました。未完了のやり取りは次の会話に含みません。'; }
-    this.active = undefined; this.busy = false; this.warmSpare(); this.publish();
+    if (this.active.length) { for (const job of this.active) job.cancel(); this.status = '停止しました。未完了のやり取りは次の会話に含みません。'; }
+    this.active = []; this.busy = false; this.warmSpare(); this.publish();
   }
   private imageToken() { return `${this.generation}:${this.imageSelection}`; }
   private async attachImage(drop?: Record<string, unknown>, file?: vscode.Uri) {
@@ -246,7 +289,7 @@ class ChatProvider implements vscode.WebviewViewProvider, vscode.Disposable {
       await this.send(this.edits.prompt(edit), edit);
     } catch { this.edits.abandon(edit); this.publish(); void vscode.window.showWarningMessage('選択テキストの処理を開始できませんでした。'); }
   }
-  dispose() { ++this.imageSelection; this.image = undefined; this.messages = []; this.history = []; this.view = undefined; this.stop(); this.dropSpare(); this.edits.dispose(); }
+  dispose() { ++this.imageSelection; this.image = undefined; this.messages = []; this.history = []; this.ollamaHistory = []; this.view = undefined; this.stop(); this.dropSpare(); this.edits.dispose(); }
 }
 // Pasted and dropped images share the webview message; only the wording differs.
 const imageError = (message: Record<string, unknown>) => message.source === 'paste'
@@ -260,6 +303,7 @@ function imageUri(uri: vscode.Uri) {
   return uri;
 }
 const count = (value: number) => value.toLocaleString('en-US');
+const compareEnabled = () => vscode.workspace.getConfiguration('localFM.compare').get<boolean>('enabled') === true;
 
 // The parts of the built-in Git extension's API (vscode.git, API version 1) used here.
 type Repository = { rootUri: vscode.Uri; inputBox: { value: string }; state: { indexChanges: readonly unknown[] }; diff(cached?: boolean): Promise<string> };

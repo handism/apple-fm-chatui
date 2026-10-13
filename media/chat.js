@@ -14,6 +14,7 @@
     $('stop').hidden = !state.busy;
     $('send').hidden = state.busy;
     $('refresh').disabled = state.busy;
+    $('compare').setAttribute('aria-pressed', String(!!state.compare));
     $('attach-image').disabled = state.busy || !state.ready || !state.imagesSupported;
   }
   // Model output is always text, never trusted HTML. Fenced code gets a pre block;
@@ -74,9 +75,10 @@
   }
   const notes = { generating: '選択テキストを処理中…', generated: '差分を確認してから適用できます。', previewed: '差分を開きました。内容を確認して適用してください。', applying: '適用中…', applied: '適用しました。元に戻すにはエディタでUndo。', stale: '元の文章が変更されたか閉じられました。選択し直して実行してください。', failed: '生成が完了しなかったため適用できません。', discarded: 'この候補は破棄しました。' };
   function article(message, index) {
-    const node = document.createElement('article'); node.className = message.role;
+    const node = document.createElement('article'); node.className = message.source ? `${message.role} ${message.source}` : message.role;
     const heading = document.createElement('div'); heading.className = 'message-heading';
-    const label = document.createElement('strong'); label.textContent = message.role === 'user' ? 'あなた' : 'LOCAL FM';
+    const label = document.createElement('strong');
+    label.textContent = message.role === 'user' ? 'あなた' : message.source === 'ollama' ? `OLLAMA${message.model ? ` · ${message.model}` : ''}` : 'LOCAL FM';
     heading.append(label);
     if (message.text) {
       const copy = document.createElement('button'); copy.className = 'quiet'; copy.textContent = 'コピー';
@@ -85,7 +87,7 @@
     }
     node.append(heading);
     if (message.image) { const image = document.createElement('img'); image.className = 'message-image'; image.src = `data:${message.image.mime};base64,${message.image.data}`; image.alt = message.image.name; node.append(image); }
-    content(node, message.text || (state.busy ? '考えています…' : '応答はありません。'), message.role === 'assistant' && !!message.text);
+    content(node, message.text || (state.busy && message.incomplete && !message.note ? (message.source === 'ollama' && !message.model ? 'Local FMの回答後に生成します…' : '考えています…') : '応答はありません。'), message.role === 'assistant' && !!message.text);
     if (message.edit) {
       const edit = message.edit;
       const actions = document.createElement('div'); actions.className = 'edit-actions';
@@ -164,7 +166,7 @@
   });
   prompt.addEventListener('input', () => { vscode.setState({ draft: prompt.value }); fit(); controls(); });
   $('status-toggle').onclick = () => showDiagnostics($('diagnostics').hidden);
-  for (const [id, type] of [['attach-image', 'attachImage'], ['remove-image', 'removeImage'], ['reset', 'reset'], ['refresh', 'refresh'], ['stop', 'stop'], ['attach', 'attach'], ['remove', 'removeAttachment'], ['copy-diagnostics', 'copyDiagnostics']]) $(id).onclick = () => send(type);
+  for (const [id, type] of [['attach-image', 'attachImage'], ['remove-image', 'removeImage'], ['reset', 'reset'], ['refresh', 'refresh'], ['compare', 'toggleCompare'], ['stop', 'stop'], ['attach', 'attach'], ['remove', 'removeAttachment'], ['copy-diagnostics', 'copyDiagnostics']]) $(id).onclick = () => send(type);
   document.querySelectorAll('[data-prompt]').forEach(button => button.onclick = () => {
     prompt.value = button.dataset.prompt; prompt.dispatchEvent(new Event('input')); prompt.focus();
   });
