@@ -1,18 +1,21 @@
 # Local FM Chat
 
-Macの **Apple Foundation Models**（オンデバイスモデル）と、VS Codeのサイドバーで会話する拡張機能です。APIキー・外部通信は不要です。個人開発の拡張であり、Apple公式ではありません。
+Macの **Apple Foundation Models**（オンデバイスモデル）と、VS Codeのサイドバーで会話する拡張機能です。APIキー・外部通信は不要です。[Ollama](https://ollama.com/) があれば、同じ質問へのOllamaの回答を並べて比べることもできます。個人開発の拡張であり、Apple公式ではありません。
 
 ## 必要な環境
 
 - Apple Silicon搭載Mac、macOS 26以降（画像入力はmacOS 27以降）
 - Apple Intelligenceが有効で、オンデバイスモデルのダウンロードが完了していること
 - VS Code 1.95以降のデスクトップ版
+- 比較モードを使う場合のみ：Ollamaと、ダウンロード済みのモデル
 
 ## インストール
 
 1. [GitHub Releasesの最新版](https://github.com/handism/apple-fm-chatui/releases/latest) から `apple-fm-chatui-darwin-arm64-<バージョン>.vsix` をダウンロードします。
 2. VS Codeの拡張機能画面で「…」→「VSIXからのインストール」を選びます。
 3. アクティビティバーの吹き出しアイコン、またはコマンド `Local FM: チャットを開く` で開きます。
+
+新しいバージョンに更新したら、コマンドパレットで「開発者: ウィンドウの再読み込み」を実行してください。再読み込みしないと、新しく追加された設定が使えないことがあります。
 
 ## 機能
 
@@ -50,13 +53,16 @@ PNG/JPEGを1枚添付できます。添付方法は次のいずれかです。
 
 ### 比較モード（Ollama）
 
-[Ollama](https://ollama.com/) をインストール済みの場合、チャット上部の `⇄` ボタン（設定 `localFM.compare.enabled`）で比較モードをオンにできます。比較モードでは、1回の送信に対してLocal FMとOllamaの両方が回答し、2つの回答を並べて表示します。
+Ollamaをインストール済みの場合、チャット上部の `⇄` ボタン（設定 `localFM.compare.enabled`）で比較モードをオンにできます。比較モードでは、1回の送信に対してLocal FMとOllamaの両方が回答し、2つの回答を並べて表示します。
 
 - Local FMが先に回答し、そのあとでOllamaが回答します。同時に動かすとGPUを取り合い、Local FMの応答が数倍遅くなるためです。
 - 会話の履歴はモデルごとに別々に保持します。どちらのモデルも、自分の過去の回答を文脈にして会話を続けます。
 - Ollamaに接続できない場合やエラーになった場合は、Ollama側の回答欄に理由を表示します。Local FMの回答には影響しません。
-- 使うモデルは `localFM.ollama.model` で指定します。空欄の場合は、インストール済みの最初のモデルを使います。接続先は `localFM.ollama.endpoint`（既定 `http://localhost:11434`）です。
+- 使うモデルは `localFM.ollama.model`（例：`gemma4:26b-a4b-it-qat`）で指定します。空欄の場合は、インストール済みの最初のモデルを使います。接続先は `localFM.ollama.endpoint`（既定 `http://localhost:11434`）です。接続先はユーザー設定でのみ変更でき、ワークスペースの設定では変えられません。
+- Ollama側の初回はモデルの読み込みに時間がかかります。また、思考してから回答するモデル（gemma4など）は、最初の文字が出るまで10秒前後かかることがあります。
+- 画像を添付した場合は、Ollamaにも画像を送ります。画像に対応していないモデルでは、Ollama側の回答欄にエラーが表示されます。
 - 選択テキストの定型アクションとコミットメッセージ生成は、比較モードでもLocal FMだけで処理します。
+- `⇄` を押して切り替えられない場合は警告が表示されます。拡張機能の更新直後に起きるため、ウィンドウを再読み込みしてください。
 
 ### モデルの状態・診断
 
@@ -67,7 +73,7 @@ PNG/JPEGを1枚添付できます。添付方法は次のいずれかです。
 - 推論はすべてこのMac上で行います。外部API・テレメトリ・会話ログはありません。比較モードをオンにした場合だけ、会話の内容を `localFM.ollama.endpoint` のOllamaに送ります。
 - 会話履歴はメモリ内のみで、VS Codeの再起動やウィンドウの再読み込みで消えます。
 - 会話長の上限に達すると、古いやり取りを自動で省いて再試行します。入力は添付を含め12,000文字まで、回答は最大1,024トークンです。
-- オンデバイスモデルは要約・編集・分類が得意な一方、コード生成・数学・複雑な推論は苦手です。
+- オンデバイスモデルは要約・編集・分類が得意な一方、コード生成・数学・複雑な推論は苦手です。知識を問う質問では、もっともらしい誤りを答えることがあります。正確さが必要な場合は、比較モードでOllamaの回答とも見比べてください。
 - ブラウザー版VS Codeには対応しません。Remote SSHでの動作は未検証です。
 
 ## 開発
@@ -90,7 +96,17 @@ printf '%s' '{"prompt":"こんにちは","history":[]}' | ./bin/local-fm
 
 ### リリース
 
-`package.json` の `version` を上げてmainへpushすると、CIのテストが通り、かつSDK 27以降で画像対応ビルドができた場合に限り、`v<version>` のGitHub Releaseを作成してVSIXを添付します。配布物はad-hoc署名で、公証やMarketplaceへの公開はしていません。
+`package.json` の `version` を上げてmainへpushすると、CIがテストとビルドを実行します。CIは、SDK 27以降で画像対応ビルドができた場合に限り、`v<version>` のGitHub Releaseを作成してVSIXを添付します。
+
+現在のCIのランナーにはSDK 26しかないため、リリースは自動では作成されません。SDK 27以降の手元の環境で次のように作成します。
+
+```sh
+npm run package
+./bin/local-fm --status   # "images":true を確認
+gh release create v<version> apple-fm-chatui-darwin-arm64-<version>.vsix --target "$(git rev-parse HEAD)" --title "Local FM Chat v<version>"
+```
+
+`--target` には短縮形ではない完全なコミットSHAを指定してください。配布物はad-hoc署名で、公証やMarketplaceへの公開はしていません。
 
 ## 参照
 
